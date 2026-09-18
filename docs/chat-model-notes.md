@@ -39,6 +39,9 @@ ChatMemory
 
 MessageWindowChatMemory
     → keeps a bounded window of recent messages
+
+SystemMessage
+    → supplies Library AI's behavior instructions on every call
 ```
 
 ## Why request and response are records
@@ -73,7 +76,7 @@ AiChatService.generateAnswer(...)
 ChatMemory.add(chatId, UserMessage)
         ↓
 ChatMemory.get(chatId)
-        ↓ retained history → Prompt
+        ↓ SystemMessage + retained history → Prompt
 ChatModel.call(prompt)
         ↓ network boundary
 GoogleGenAiChatModel
@@ -88,6 +91,19 @@ HTTP response
 Gemini does not remember earlier API calls by itself. The application sends the retained messages again on every request. After Gemini responds, its `AssistantMessage` is saved so it is available for the next turn.
 
 The current conversation key is the book's `chatId`, not an HTTP session ID. Reusing a chat ID continues that book's conversation; another chat ID creates isolated history.
+
+## System message
+
+The service prepends a reusable `SystemMessage` to every prompt. It defines the assistant's role and constraints but is deliberately not stored in `ChatMemory`:
+
+```text
+Prompt
+├── SYSTEM: Library AI behavior instructions
+├── USER / ASSISTANT: retained conversation turns
+└── USER: current question
+```
+
+Keeping it outside memory prevents duplicate copies while ensuring it is always the first message sent to the model. A system prompt guides Gemini; it does not give Gemini access to book text that the application has not supplied.
 
 Everything before `ChatModel.call(...)` is local. That call sends the prompt to Gemini and consumes remote API quota.
 
@@ -222,7 +238,7 @@ For per-request selection, inject the models into a routing service and select t
 - Memory is currently in-process and is lost when the application restarts.
 - The default window retains at most 20 messages for each chat ID.
 - Concurrent backend instances do not share this in-memory history.
-- No system prompt is configured.
+- Actual book content is not supplied yet; the system message only defines behavior.
 - Token usage depends on metadata reported by the selected provider/model.
 - No embeddings, vector database, or RAG exist yet.
 
@@ -238,3 +254,4 @@ For per-request selection, inject the models into a routing service and select t
 8. `ChatMemory` stores messages; Gemini only sees the messages placed in each new `Prompt`.
 9. A book's `chatId` is used as the conversation ID, keeping different books isolated.
 10. Token usage is model-call metadata; longer retained history generally increases prompt tokens.
+11. A `SystemMessage` controls behavior and should appear before the conversation messages.

@@ -1,10 +1,12 @@
 package com.libraryai.ai;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -18,6 +20,22 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class AiChatService {
+
+    /**
+     * Application-level instructions sent before every book conversation.
+     * This is not stored in ChatMemory, so it appears exactly once per prompt.
+     */
+    private static final SystemMessage LIBRARY_ASSISTANT_INSTRUCTIONS =
+            SystemMessage.builder()
+                    .text("""
+                            You are Library AI, a helpful learning assistant for books.
+                            Explain ideas clearly and use concise examples when useful.
+                            Use supplied book context when it is available.
+                            Never pretend to have read book content that was not supplied.
+                            If a question requires missing book context, clearly say so.
+                            Keep answers focused unless the user asks for more detail.
+                            """)
+                    .build();
 
     private final ChatModel chatModel;
     private final ChatMemory chatMemory;
@@ -42,9 +60,7 @@ public class AiChatService {
         // chatId is the conversation key. Each book therefore gets separate memory.
         chatMemory.add(chatId, userMessage);
 
-        // The prompt contains this book's retained USER and ASSISTANT messages.
-        List<Message> messages = chatMemory.get(chatId);
-        ChatResponse response = chatModel.call(new Prompt(messages));
+        ChatResponse response = chatModel.call(createPrompt(chatId));
 
         // Saving Gemini's reply lets a later question refer to the earlier answer.
         AssistantMessage assistantMessage = response.getResult().getOutput();
@@ -60,6 +76,16 @@ public class AiChatService {
                 usage.getCompletionTokens(),
                 usage.getTotalTokens()
         );
+    }
+
+    private Prompt createPrompt(String chatId) {
+        // Prompt order matters: system instructions come first, followed by this
+        // book's retained USER and ASSISTANT messages in conversation order.
+        List<Message> promptMessages = new ArrayList<>();
+        promptMessages.add(LIBRARY_ASSISTANT_INSTRUCTIONS);
+        promptMessages.addAll(chatMemory.get(chatId));
+
+        return new Prompt(promptMessages);
     }
 
     public void clearHistory(String chatId) {
