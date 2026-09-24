@@ -43,9 +43,13 @@ final class RetrievalTaskEmbeddingModel implements EmbeddingModel {
 
     @Override
     public float[] embed(String text) {
-        return this.delegate.call(new EmbeddingRequest(List.of(text), this.queryOptions))
+        float[] embedding = this.delegate.call(new EmbeddingRequest(List.of(text), this.queryOptions))
                 .getResult()
                 .getOutput();
+        // PgVectorStore performs its SQL search immediately after this method
+        // returns, so this is the exact boundary between embedding and search.
+        QueryEmbeddingProgressContext.embeddingReady();
+        return embedding;
     }
 
     @Override

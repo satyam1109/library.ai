@@ -6,6 +6,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -67,6 +68,46 @@ public class RagChatService {
     }
 
     public RagChatResponse chat(RagChatRequest request) {
+        return chat(request, RagChatProgressListener.NONE);
+    }
+
+    public RagChatResponse chat(
+            RagChatRequest request,
+            RagChatProgressListener progressListener) {
+        return executeChat(
+                request,
+                progressListener,
+                ignored -> { },
+                ignored -> { },
+                false
+        );
+    }
+
+    /**
+     * Runs the same RAG flow as {@link #chat(RagChatRequest)}, while exposing
+     * retrieved sources and Gemini's incremental answer text to an SSE client.
+     */
+    public RagChatResponse streamChat(
+            RagChatRequest request,
+            RagChatProgressListener progressListener,
+            Consumer<List<SimilaritySearchResult>> sourcesListener,
+            Consumer<String> tokenListener) {
+        return executeChat(
+                request,
+                progressListener,
+                sourcesListener,
+                tokenListener,
+                true
+        );
+    }
+
+    private RagChatResponse executeChat(
+            RagChatRequest request,
+            RagChatProgressListener progressListener,
+            Consumer<List<SimilaritySearchResult>> sourcesListener,
+            Consumer<String> tokenListener,
+            boolean streamAnswer) {
+        progressListener.onStage(RagChatProgressStage.UNDERSTANDING);
         UUID conversationId = requireConversationId(request.conversationId());
         List<String> documentIds = requireReadyDocuments(request.documentIds());
         String memoryKey = memoryKey(conversationId, documentIds);
@@ -74,12 +115,17 @@ public class RagChatService {
         String retrievalQuery = buildRetrievalQuery(request.message(), history);
 
         MultiDocumentSimilaritySearchResponse retrieval =
-                this.retrievalService.searchAcrossDocuments(
-                        retrievalQuery, documentIds, request.topK()
+                QueryEmbeddingProgressContext.withListener(
+                        () -> progressListener.onStage(RagChatProgressStage.SEARCHING),
+                        () -> this.retrievalService.searchAcrossDocuments(
+                                retrievalQuery, documentIds, request.topK()
+                        )
                 );
         if (retrieval.results().isEmpty()) {
             throw new IllegalArgumentException("No indexed chunks were found for the selected documents");
         }
+        sourcesListener.accept(retrieval.results());
+        progressListener.onStage(RagChatProgressStage.GENERATING);
 
         UserMessage userMessage = UserMessage.builder().text(request.message().strip()).build();
         UserMessage groundedMessage = UserMessage.builder()
@@ -91,12 +137,15 @@ public class RagChatService {
         promptMessages.addAll(history);
         promptMessages.add(groundedMessage);
 
-        ChatResponse modelResponse = this.chatModel.call(new Prompt(promptMessages));
-        AssistantMessage assistantMessage = modelResponse.getResult().getOutput();
+        Prompt prompt = new Prompt(promptMessages);
+        GeneratedAnswer generatedAnswer = streamAnswer
+                ? streamAnswer(prompt, tokenListener)
+                : completeAnswer(prompt);
+        AssistantMessage assistantMessage = generatedAnswer.message();
         this.chatMemory.add(memoryKey, userMessage);
         this.chatMemory.add(memoryKey, assistantMessage);
 
-        Usage usage = modelResponse.getMetadata().getUsage();
+        Usage usage = generatedAnswer.usage();
         return new RagChatResponse(
                 conversationId.toString(),
                 documentIds,
@@ -108,6 +157,46 @@ public class RagChatService {
                 usage == null ? null : usage.getCompletionTokens(),
                 usage == null ? null : usage.getTotalTokens()
         );
+    }
+
+    private GeneratedAnswer completeAnswer(Prompt prompt) {
+        ChatResponse response = this.chatModel.call(prompt);
+        return new GeneratedAnswer(
+                response.getResult().getOutput(),
+                response.getMetadata() == null ? null : response.getMetadata().getUsage()
+        );
+    }
+
+    private GeneratedAnswer streamAnswer(Prompt prompt, Consumer<String> tokenListener) {
+        StringBuilder answer = new StringBuilder();
+        Usage[] finalUsage = new Usage[1];
+
+        // Spring AI normalizes Gemini's streaming response into ChatResponse chunks.
+        this.chatModel.stream(prompt).doOnNext(response -> {
+            if (response.getMetadata() != null && response.getMetadata().getUsage() != null) {
+                finalUsage[0] = response.getMetadata().getUsage();
+            }
+            if (response.getResult() == null || response.getResult().getOutput() == null) {
+                return;
+            }
+            String text = response.getResult().getOutput().getText();
+            if (text == null || text.isEmpty()) {
+                return;
+            }
+            answer.append(text);
+            tokenListener.accept(text);
+        }).blockLast();
+
+        if (answer.isEmpty()) {
+            throw new IllegalStateException("Gemini completed without returning an answer");
+        }
+        return new GeneratedAnswer(
+                AssistantMessage.builder().content(answer.toString()).build(),
+                finalUsage[0]
+        );
+    }
+
+    private record GeneratedAnswer(AssistantMessage message, Usage usage) {
     }
 
     private UUID requireConversationId(String rawConversationId) {

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { getDocuments, sendRagMessage, uploadDocument } from "./api.js";
+import { getDocuments, streamRagMessage, uploadDocument } from "./api.js";
 
 const MAX_DOCUMENTS = 3;
 const ACTIVE_CHAT_SESSION_KEY = "library-ai.active-chat.v1";
+const MIN_PROGRESS_STAGE_MILLIS = 600;
 
 function emptyChatSession() {
   return {
@@ -78,8 +79,26 @@ function DocumentCard({ document, selected, disabled, onToggle }) {
   );
 }
 
-function SourceList({ sources }) {
+function SourceList({ sources, focusRequest, sourceGroupId }) {
   const [showAll, setShowAll] = useState(false);
+  const focusedRank = focusRequest?.rank;
+
+  useEffect(() => {
+    if (!focusedRank || !sources?.some((source) => source.rank === focusedRank)) return;
+    if (!showAll && sources.findIndex((source) => source.rank === focusedRank) >= 2) {
+      setShowAll(true);
+      return;
+    }
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      const sourceCard = document.getElementById(`${sourceGroupId}-source-${focusedRank}`);
+      if (!sourceCard) return;
+      sourceCard.open = true;
+      sourceCard.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [focusRequest, focusedRank, showAll, sourceGroupId, sources]);
+
   if (!sources?.length) return null;
   const hiddenSourceCount = Math.max(0, sources.length - 2);
   const visibleSources = showAll ? sources : sources.slice(0, 2);
@@ -93,7 +112,11 @@ function SourceList({ sources }) {
           ? metadata.page_numbers.join(", ")
           : metadata.page_numbers || metadata.page_number || "—";
         return (
-          <details className="source-card" key={`${source.rank}-${metadata.document_id}-${metadata.chunk_index}`}>
+          <details
+            className={`source-card ${focusedRank === source.rank ? "citation-target" : ""}`}
+            id={`${sourceGroupId}-source-${source.rank}`}
+            key={`${source.rank}-${metadata.document_id}-${metadata.chunk_index}`}
+          >
             <summary>
               <span className="source-rank">{source.rank}</span>
               <span className="source-title">
@@ -128,16 +151,138 @@ function SourceList({ sources }) {
   );
 }
 
-function MarkdownAnswer({ children }) {
+function MarkdownAnswer({ children, onCitationClick }) {
+  const linkedCitations = children.replace(
+    /\[Source\s+(\d+)((?:\s*,\s*Source\s+\d+)*)\](?!\()/gi,
+    (_citation, firstRank, remainingRanks) => {
+      const ranks = [
+        firstRank,
+        ...Array.from(remainingRanks.matchAll(/Source\s+(\d+)/gi), (match) => match[1]),
+      ];
+      return ranks.map((rank) => `[Source ${rank}](#source-${rank})`).join(", ");
+    },
+  );
+
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       components={{
-        a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+        a: ({ node: _node, href, children: linkChildren, ...props }) => {
+          const citation = href?.match(/^#source-(\d+)$/);
+          if (citation) {
+            return (
+              <button
+                type="button"
+                className="citation-link"
+                onClick={() => onCitationClick(Number(citation[1]))}
+                aria-label={`Open supporting source ${citation[1]}`}
+              >
+                {linkChildren}
+              </button>
+            );
+          }
+          return <a href={href} {...props} target="_blank" rel="noreferrer">{linkChildren}</a>;
+        },
       }}
     >
-      {children}
+      {linkedCitations}
     </ReactMarkdown>
+  );
+}
+
+function GroundedResponse({ text, sources, usage, responseId, streaming = false }) {
+  const [focusRequest, setFocusRequest] = useState(null);
+
+  function focusSource(rank) {
+    setFocusRequest({ rank, requestedAt: Date.now() });
+  }
+
+  return (
+    <>
+      <div className={`message-body ${streaming ? "streaming-answer" : ""}`}>
+        <MarkdownAnswer onCitationClick={focusSource}>{text}</MarkdownAnswer>
+        {streaming && <span className="streaming-cursor" aria-label="Answer is still being written" />}
+      </div>
+      <SourceList
+        sources={sources}
+        focusRequest={focusRequest}
+        sourceGroupId={responseId}
+      />
+      {usage != null && <div className="token-usage">{usage.toLocaleString()} model tokens</div>}
+    </>
+  );
+}
+
+const RAG_PROGRESS_STEPS = [
+  {
+    stage: "UNDERSTANDING",
+    label: "Understanding your question",
+    shortLabel: "Understanding",
+    completeLabel: "Understood",
+  },
+  {
+    stage: "SEARCHING",
+    label: "Searching selected documents",
+    shortLabel: "Finding sources",
+    completeLabel: "Sources found",
+  },
+  {
+    stage: "GENERATING",
+    label: "Creating your grounded answer",
+    shortLabel: "Writing answer",
+    completeLabel: "Answer created",
+  },
+];
+
+function RagProgress({ progress, documentCount }) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const activeIndex = Math.max(
+    0,
+    RAG_PROGRESS_STEPS.findIndex((step) => step.stage === progress?.stage),
+  );
+
+  useEffect(() => {
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const activeStep = RAG_PROGRESS_STEPS[activeIndex];
+  const activeDetail = {
+    UNDERSTANDING: "Creating a semantic search from your question",
+    SEARCHING: `Comparing your question with passages across ${documentCount} document${documentCount === 1 ? "" : "s"}`,
+    GENERATING: `Relevant passages found across ${documentCount} document${documentCount === 1 ? "" : "s"}`,
+  }[activeStep.stage];
+
+  return (
+    <div className="rag-progress" role="status" aria-live="polite">
+      <div className="progress-current">
+        <span className="progress-spinner" aria-hidden="true" />
+        <span className="progress-copy">
+          <strong>{activeStep.label}</strong>
+          <small>{activeDetail}</small>
+        </span>
+        <span className="progress-time" aria-label={`${elapsedSeconds} seconds elapsed`}>
+          {elapsedSeconds}s
+        </span>
+      </div>
+
+      <div className="progress-milestones" aria-label="Answer preparation progress">
+        {RAG_PROGRESS_STEPS.map((step, index) => {
+          const state = index < activeIndex ? "complete" : index === activeIndex ? "active" : "pending";
+          return (
+            <span className={`progress-milestone ${state}`} key={step.stage}>
+              <span className="milestone-marker">
+                {state === "complete" ? <Icon name="check" size={11} /> : <span />}
+              </span>
+              {state === "complete" ? step.completeLabel : step.shortLabel}
+            </span>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -151,6 +296,9 @@ function App() {
   const [loadingDocuments, setLoadingDocuments] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [progress, setProgress] = useState(null);
+  const [streamedAnswer, setStreamedAnswer] = useState("");
+  const [streamedSources, setStreamedSources] = useState([]);
   const [notice, setNotice] = useState(null);
   const fileInputRef = useRef(null);
   const endRef = useRef(null);
@@ -254,13 +402,27 @@ function App() {
     setMessages((current) => [...current, { role: "user", text: cleanMessage }]);
     setMessage("");
     setSending(true);
+    setProgress({ stage: "UNDERSTANDING", message: "Understanding your question" });
+    setStreamedAnswer("");
+    setStreamedSources([]);
     try {
-      const result = await sendRagMessage({
-        conversationId,
-        documentIds: selectedIds,
-        message: cleanMessage,
-        topK: 5,
-      });
+      const result = await streamRagMessage(
+        {
+          conversationId,
+          documentIds: selectedIds,
+          message: cleanMessage,
+          topK: 5,
+        },
+        {
+          onProgress: async (progressEvent) => {
+            setProgress(progressEvent);
+            // Fast stages still remain visible long enough to be understood.
+            await new Promise((resolve) => window.setTimeout(resolve, MIN_PROGRESS_STAGE_MILLIS));
+          },
+          onSources: (sourceEvent) => setStreamedSources(sourceEvent.sources || []),
+          onToken: (text) => setStreamedAnswer((current) => current + text),
+        },
+      );
       setMessages((current) => [...current, {
         role: "assistant",
         text: result.answer,
@@ -274,6 +436,9 @@ function App() {
       }]);
     } finally {
       setSending(false);
+      setProgress(null);
+      setStreamedAnswer("");
+      setStreamedSources([]);
     }
   }
 
@@ -376,24 +541,32 @@ function App() {
             {messages.map((item, index) => (
               <article className={`message ${item.role}`} key={`${item.role}-${index}`}>
                 <div className="message-label">{item.role === "user" ? "You" : item.role === "assistant" ? "Library AI" : "Request error"}</div>
-                <div className="message-body">
-                  {item.role === "assistant"
-                    ? <MarkdownAnswer>{item.text}</MarkdownAnswer>
-                    : item.text}
-                </div>
-                {item.role === "assistant" && (
-                  <>
-                    <SourceList sources={item.sources} />
-                    {item.usage != null && <div className="token-usage">{item.usage.toLocaleString()} model tokens</div>}
-                  </>
-                )}
+                {item.role === "assistant"
+                  ? (
+                    <GroundedResponse
+                      text={item.text}
+                      sources={item.sources}
+                      usage={item.usage}
+                      responseId={`response-${index}`}
+                    />
+                  )
+                  : <div className="message-body">{item.text}</div>}
               </article>
             ))}
 
             {sending && (
               <article className="message assistant loading-message">
                 <div className="message-label">Library AI</div>
-                <div className="thinking"><span /><span /><span /> Searching selected documents</div>
+                {streamedAnswer
+                  ? (
+                    <GroundedResponse
+                      text={streamedAnswer}
+                      sources={streamedSources}
+                      responseId="streaming-response"
+                      streaming
+                    />
+                  )
+                  : <RagProgress progress={progress} documentCount={selectedIds.length} />}
               </article>
             )}
             <div ref={endRef} />

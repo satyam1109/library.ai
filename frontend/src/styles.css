@@ -108,6 +108,9 @@ h1, h2, p { margin-top: 0; }
 .message.assistant .message-body li::marker { color: var(--green); font-weight: 700; }
 .message.assistant .message-body strong { color: #122018; font-weight: 700; }
 .message.assistant .message-body a { color: var(--green); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.citation-link { display: inline; margin: 0; border: 0; border-radius: 5px; background: var(--green-soft); padding: 1px 4px; color: var(--green); font: inherit; font-size: .9em; font-weight: 700; cursor: pointer; vertical-align: baseline; }
+.citation-link:hover { background: #dceee2; text-decoration: underline; text-underline-offset: 2px; }
+.citation-link:focus-visible { outline: 2px solid #78a98a; outline-offset: 2px; }
 .message.assistant .message-body blockquote { margin: 16px 0; padding: 9px 14px; border-left: 3px solid #91b7a0; background: var(--green-soft); color: #405448; }
 .message.assistant .message-body code { border: 1px solid #e0e6e1; border-radius: 5px; background: #f4f6f4; padding: 2px 5px; color: #28553d; font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: .9em; }
 .message.assistant .message-body pre { margin: 15px 0; border: 1px solid #dce3dd; border-radius: 11px; background: #f6f8f6; padding: 14px 16px; overflow-x: auto; line-height: 1.55; }
@@ -123,6 +126,7 @@ h1, h2, p { margin-top: 0; }
 .sources { margin-top: 19px; }
 .sources-label { color: #7a837d; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; margin-bottom: 7px; }
 .source-card { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 7px; background: #fff; overflow: hidden; }
+.source-card.citation-target { border-color: #84ae91; box-shadow: 0 0 0 3px rgba(31, 107, 72, .09); }
 .source-card summary { list-style: none; padding: 10px 12px; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto 16px; gap: 9px; align-items: center; cursor: pointer; }
 .source-card summary::-webkit-details-marker { display: none; }
 .source-card[open] summary svg { transform: rotate(90deg); }
@@ -138,11 +142,32 @@ h1, h2, p { margin-top: 0; }
 .toggle-chevron { display: grid; place-items: center; transition: transform .18s ease; }
 .toggle-chevron.expanded { transform: rotate(-90deg); }
 .token-usage { margin-top: 9px; color: #929993; font-size: 9px; text-align: right; }
-.thinking { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
-.thinking span { width: 5px; height: 5px; border-radius: 50%; background: #8da092; animation: pulse 1.2s infinite ease-in-out; }
-.thinking span:nth-child(2) { animation-delay: .15s; }
-.thinking span:nth-child(3) { animation-delay: .3s; margin-right: 5px; }
-@keyframes pulse { 0%, 80%, 100% { opacity: .25; transform: scale(.8); } 40% { opacity: 1; transform: scale(1); } }
+.streaming-answer { position: relative; }
+.streaming-cursor { display: inline-block; width: 2px; height: 1.05em; margin-left: 3px; border-radius: 2px; background: var(--green); vertical-align: -.12em; animation: cursor-blink .9s infinite; }
+@keyframes cursor-blink { 0%, 45% { opacity: 1; } 46%, 100% { opacity: .18; } }
+.rag-progress { border: 1px solid #d9e3dc; border-radius: 14px; background: #fbfcfb; padding: 16px 17px 13px; box-shadow: 0 6px 22px rgba(31, 107, 72, .045); }
+.progress-current { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 11px; align-items: center; }
+.progress-spinner { width: 27px; height: 27px; border: 2px solid #d8e6dc; border-top-color: var(--green); border-radius: 50%; animation: progress-spin .85s linear infinite; }
+.progress-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.progress-copy strong { color: #244c37; font-size: 12px; font-weight: 700; }
+.progress-copy small { color: var(--muted); font-size: 10px; line-height: 1.45; }
+.progress-time { align-self: start; margin-top: 2px; color: #838c85; font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.progress-milestones { margin: 13px 0 0 39px; padding-top: 10px; border-top: 1px solid #e8ede9; display: flex; flex-wrap: wrap; align-items: center; gap: 7px 15px; }
+.progress-milestone { display: inline-flex; align-items: center; gap: 5px; color: #9aa19c; font-size: 9px; font-weight: 600; white-space: nowrap; }
+.milestone-marker { width: 15px; height: 15px; border: 1px solid #d1d9d3; border-radius: 50%; background: #fff; display: grid; place-items: center; color: #fff; }
+.milestone-marker > span { width: 4px; height: 4px; border-radius: 50%; background: #c4cbc6; }
+.progress-milestone.complete { color: #5e7667; }
+.progress-milestone.complete .milestone-marker { border-color: var(--green); background: var(--green); }
+.progress-milestone.active { color: var(--green); }
+.progress-milestone.active .milestone-marker { border-color: #a4c3ad; background: var(--green-soft); }
+.progress-milestone.active .milestone-marker > span { background: var(--green); animation: progress-pulse 1.25s infinite ease-in-out; }
+@keyframes progress-spin { to { transform: rotate(360deg); } }
+@keyframes progress-pulse { 0%, 100% { opacity: .4; transform: scale(.75); } 50% { opacity: 1; transform: scale(1.35); } }
+@media (prefers-reduced-motion: reduce) {
+  .progress-spinner { animation-duration: 2.4s; }
+  .progress-milestone.active .milestone-marker > span { animation: none; }
+  .streaming-cursor { animation: none; }
+}
 
 .composer { margin: 0 auto 22px; width: min(820px, calc(100% - 76px)); border: 1px solid #d8ded9; border-radius: 15px; background: #fff; padding: 12px 12px 7px 15px; display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 7px 10px; box-shadow: 0 10px 30px rgba(23, 33, 27, .06); }
 .composer textarea { width: 100%; min-height: 42px; max-height: 130px; resize: none; border: 0; outline: 0; padding: 10px 2px 7px; color: var(--ink); line-height: 1.5; font-size: 13px; }
@@ -175,6 +200,8 @@ h1, h2, p { margin-top: 0; }
   .welcome-state { margin-top: 35px; }
   .welcome-state h2 { font-size: 27px; }
   .message.user { padding-left: 7%; }
+  .rag-progress { padding-inline: 14px; }
+  .progress-milestones { margin-left: 0; gap: 7px 11px; }
   .composer { width: calc(100% - 28px); margin-bottom: 14px; }
   .composer-meta span:last-child { display: none; }
 }

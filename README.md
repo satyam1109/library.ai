@@ -435,6 +435,27 @@ For every message, the backend:
 
 Memory is isolated by both `conversationId` and the normalized set of selected document IDs. Even if a client accidentally reuses one conversation ID with a different document selection, the histories cannot mix. The current backend memory repository is in-process, so model memory is cleared when Spring Boot restarts.
 
+For interactive progress, the frontend sends the same request body to:
+
+```http
+POST /api/rag/chat/stream
+Accept: text/event-stream
+```
+
+The endpoint returns server-sent events from real backend boundaries:
+
+```text
+progress: UNDERSTANDING  -> validate context and create the Gemini query embedding
+progress: SEARCHING      -> query embedding is ready; pgvector begins similarity search
+progress: GENERATING     -> top matching chunks are ready; Gemini begins writing
+sources                  -> ranked chunks and metadata are ready for citation navigation
+token                    -> one incremental Gemini answer fragment
+result                    -> complete RagChatResponse with answer, sources, and tokens
+failure                   -> safe error message plus the stage that failed
+```
+
+The original JSON `/api/rag/chat` endpoint remains available for non-streaming clients. The streaming endpoint uses Spring AI's `ChatModel.stream(Prompt)` with the same Gemini model, API key, prompt, retrieval results, and chat memory as the JSON flow. Streaming work runs on a bounded application executor rather than holding a servlet request thread during the external model calls.
+
 The frontend stores the active `conversationId`, selected document IDs, rendered messages, sources, and token usage in browser `sessionStorage`. This keeps the visible chat and the same backend memory key across page refreshes in the current browser tab. Closing the tab clears this browser-side session. The frontend locks document selection after the first message; choose **New chat** to generate a fresh conversation ID and select a different context. Uploads use the existing idempotent ingestion endpoint; already-indexed PDF content is reused instead of embedded again.
 
 ### Frontend flow
@@ -443,12 +464,12 @@ The frontend stores the active `conversationId`, selected document IDs, rendered
 Upload PDF ────────────────> POST /api/documents/ingest
 Load indexed documents ───> GET  /api/documents
 Select 1-3 documents
-Ask/follow up ─────────────> POST /api/rag/chat
+Ask/follow up ─────────────> POST /api/rag/chat/stream
                               ↓
-                      answer + sources + scores + tokens
+               progress → sources → answer fragments → result
 ```
 
-The interface is intentionally light and minimal. It shows indexed chunk counts, enforces the three-document limit, displays active context, renders grounded answers as safe GitHub-Flavored Markdown, and surfaces token usage for each successful answer. The two highest-ranked sources are shown initially; any additional matches are available through **Show more sources**, and every source can still be expanded to inspect its complete retrieved chunk and page metadata.
+The interface is intentionally light and minimal. It shows indexed chunk counts, enforces the three-document limit, displays active context, renders grounded answers progressively as safe GitHub-Flavored Markdown, and surfaces token usage for each successful answer. Citations such as `Source 1` are interactive: selecting one reveals, expands, highlights, and scrolls to its exact retrieved chunk. The two highest-ranked sources are shown initially; any additional matches are available through **Show more sources**, and every source can still be expanded to inspect its complete retrieved chunk and page metadata.
 
 ## Book-scoped chat memory
 

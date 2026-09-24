@@ -1,6 +1,7 @@
 package com.libraryai.rag;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -28,7 +29,11 @@ class RetrievalTaskEmbeddingModelTest {
         RetrievalTaskEmbeddingModel model = new RetrievalTaskEmbeddingModel(delegate, properties());
 
         model.embed(new Document("stored chunk"));
-        model.embed("How does HashMap work?");
+        AtomicBoolean queryEmbeddingReady = new AtomicBoolean();
+        QueryEmbeddingProgressContext.withListener(
+                () -> queryEmbeddingReady.set(true),
+                () -> model.embed("How does HashMap work?")
+        );
 
         ArgumentCaptor<EmbeddingRequest> requests = ArgumentCaptor.forClass(EmbeddingRequest.class);
         verify(delegate, org.mockito.Mockito.times(2)).call(requests.capture());
@@ -42,6 +47,7 @@ class RetrievalTaskEmbeddingModelTest {
             assertThat(options(request).getModel()).isEqualTo("gemini-embedding-001");
             assertThat(options(request).getDimensions()).isEqualTo(768);
         });
+        assertThat(queryEmbeddingReady).isTrue();
     }
 
     private GoogleGenAiTextEmbeddingOptions options(EmbeddingRequest request) {
