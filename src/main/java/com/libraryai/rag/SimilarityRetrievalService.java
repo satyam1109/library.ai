@@ -7,6 +7,7 @@ import java.util.UUID;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 import org.springframework.stereotype.Service;
 
 /** Embeds a question in query mode and retrieves the closest stored chunks. */
@@ -49,6 +50,38 @@ public class SimilarityRetrievalService {
         );
     }
 
+    /**
+     * Runs one query embedding and one globally ranked search across up to three
+     * selected documents. The IN filter preserves strict context isolation.
+     */
+    public MultiDocumentSimilaritySearchResponse searchAcrossDocuments(
+            String question,
+            List<String> requestedDocumentIds,
+            Integer requestedTopK) {
+        String validatedQuestion = requireQuestion(question);
+        int topK = validatedTopK(requestedTopK);
+        List<String> documentIds = requireDocumentIds(requestedDocumentIds);
+
+        var filter = new FilterExpressionBuilder()
+                .in("document_id", documentIds.stream().map(value -> (Object) value).toList())
+                .build();
+        SearchRequest search = SearchRequest.builder()
+                .query(validatedQuestion)
+                .topK(topK)
+                .similarityThresholdAll()
+                .filterExpression(filter)
+                .build();
+
+        List<SimilaritySearchResult> results = toResults(this.vectorStore.similaritySearch(search));
+        return new MultiDocumentSimilaritySearchResponse(
+                validatedQuestion,
+                documentIds,
+                topK,
+                results.size(),
+                results
+        );
+    }
+
     private String requireQuestion(String question) {
         if (question == null || question.isBlank()) {
             throw new IllegalArgumentException("question must not be blank");
@@ -75,5 +108,37 @@ public class SimilarityRetrievalService {
         } catch (IllegalArgumentException exception) {
             throw new IllegalArgumentException("documentId must be a valid UUID", exception);
         }
+    }
+
+    private List<String> requireDocumentIds(List<String> requestedDocumentIds) {
+        if (requestedDocumentIds == null || requestedDocumentIds.isEmpty()) {
+            throw new IllegalArgumentException("Select at least one document");
+        }
+        if (requestedDocumentIds.size() > 3) {
+            throw new IllegalArgumentException("A chat can use at most 3 documents");
+        }
+
+        List<String> documentIds = requestedDocumentIds.stream()
+                .map(this::requireDocumentId)
+                .distinct()
+                .toList();
+        if (documentIds.size() != requestedDocumentIds.size()) {
+            throw new IllegalArgumentException("documentIds must not contain duplicates");
+        }
+        return documentIds;
+    }
+
+    private List<SimilaritySearchResult> toResults(List<Document> matches) {
+        List<SimilaritySearchResult> results = new ArrayList<>(matches.size());
+        for (int index = 0; index < matches.size(); index++) {
+            Document match = matches.get(index);
+            results.add(new SimilaritySearchResult(
+                    index + 1,
+                    match.getScore() == null ? 0.0 : match.getScore(),
+                    match.getText(),
+                    match.getMetadata()
+            ));
+        }
+        return List.copyOf(results);
     }
 }

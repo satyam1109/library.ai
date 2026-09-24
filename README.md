@@ -28,6 +28,9 @@ The project is intentionally built in small stages so that each AI concept is un
 - [x] Retrieve the top matching chunks with cosine similarity.
 - [x] Extract and chunk PDF text.
 - [x] Generate a document-grounded Gemini answer with inspectable sources.
+- [x] Select up to three documents as one isolated chat context.
+- [x] Retain in-memory RAG conversation history for follow-up questions.
+- [x] Add a responsive, light React UI connected to upload, catalog, and chat APIs.
 
 ## Current architecture
 
@@ -58,16 +61,16 @@ PDF upload
     -> Gemini RETRIEVAL_DOCUMENT embeddings
     -> PostgreSQL library_chunks (documentId + text + metadata + vector)
 
-Question + documentId
+Question + 1-3 documentIds
     -> Gemini RETRIEVAL_QUERY embedding
-    -> pgvector HNSW cosine search filtered by documentId
+    -> one globally ranked pgvector search filtered to the selected documentIds
     -> top matching original chunks + metadata + relevance score
     -> grounded prompt containing numbered sources
     -> Gemini chat model
     -> answer + source chunks + token usage
 ```
 
-The selected `documentId` is mandatory, preventing context from being mixed across documents. Retrieved text is treated as untrusted reference material, and Gemini is instructed to answer only from those sources and cite them as `[Source N]`.
+At least one and at most three `documentIds` are required. The pgvector `IN` filter prevents chunks outside that explicit selection from entering the prompt. Retrieved text is treated as untrusted reference material, and Gemini is instructed to answer only from those sources and cite them as `[Source N]`.
 
 ## Technology versions
 
@@ -118,12 +121,12 @@ The current model options are:
 ```properties
 spring.ai.google.genai.chat.model=gemini-3.5-flash-lite
 spring.ai.google.genai.chat.temperature=0.2
-spring.ai.google.genai.chat.max-output-tokens=500
+spring.ai.google.genai.chat.max-output-tokens=800
 ```
 
 - `model` selects the remote Gemini model.
 - `temperature` controls variation in generated output; `0.2` favors focused responses.
-- `max-output-tokens` limits response length and helps control quota usage.
+- `max-output-tokens` allows moderately detailed teaching answers while keeping response length and quota usage bounded.
 
 The embedding/vector-store configuration is:
 
@@ -181,6 +184,22 @@ docker compose down
 ```
 
 The application listens on `http://localhost:8090`.
+
+Run the React development UI in a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`. Vite proxies `/api` requests to the Spring Boot application on port `8090`, so the browser never receives the Gemini key or database credentials. To point the UI at another backend while developing, set `VITE_BACKEND_TARGET`, for example:
+
+```bash
+VITE_BACKEND_TARGET=http://localhost:8091 npm run dev
+```
+
+Create a production frontend bundle with `npm run build`. The generated files are written to `frontend/dist` and are intentionally not committed.
 
 ## API endpoints
 
@@ -387,6 +406,50 @@ The operation is deliberately ordered:
 
 This endpoint is currently stateless. It does not mix the basic `/api/ai/chat` memory into RAG, which avoids leaking conversation context between documents. An unknown, malformed, or not-yet-ready `documentId` is rejected before an embedding or chat call is made.
 
+### Chat with up to three documents
+
+The UI uses the conversational multi-document endpoint:
+
+```bash
+curl -X POST http://localhost:8090/api/rag/chat \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "conversationId":"923e4567-e89b-12d3-a456-426614174000",
+    "documentIds":[
+      "<first-ready-document-uuid>",
+      "<second-ready-document-uuid>"
+    ],
+    "message":"Compare how these documents explain collection behavior.",
+    "topK":5
+  }'
+```
+
+For every message, the backend:
+
+1. Validates the conversation UUID and one to three unique, `READY` documents.
+2. Uses recent conversation context to make follow-up retrieval queries clearer.
+3. Creates one query embedding and performs one globally ranked similarity search across only the selected document IDs.
+4. Sends the retrieved text, source metadata, prior messages, and current question to Gemini.
+5. Returns the grounded answer, ranked sources, relevance scores, and model token usage.
+6. Retains the raw user question and assistant answer in Spring AI `ChatMemory`.
+
+Memory is isolated by both `conversationId` and the normalized set of selected document IDs. Even if a client accidentally reuses one conversation ID with a different document selection, the histories cannot mix. The current backend memory repository is in-process, so model memory is cleared when Spring Boot restarts.
+
+The frontend stores the active `conversationId`, selected document IDs, rendered messages, sources, and token usage in browser `sessionStorage`. This keeps the visible chat and the same backend memory key across page refreshes in the current browser tab. Closing the tab clears this browser-side session. The frontend locks document selection after the first message; choose **New chat** to generate a fresh conversation ID and select a different context. Uploads use the existing idempotent ingestion endpoint; already-indexed PDF content is reused instead of embedded again.
+
+### Frontend flow
+
+```text
+Upload PDF ────────────────> POST /api/documents/ingest
+Load indexed documents ───> GET  /api/documents
+Select 1-3 documents
+Ask/follow up ─────────────> POST /api/rag/chat
+                              ↓
+                      answer + sources + scores + tokens
+```
+
+The interface is intentionally light and minimal. It shows indexed chunk counts, enforces the three-document limit, displays active context, expands retrieved source chunks with page information, and surfaces token usage for each successful answer.
+
 ## Book-scoped chat memory
 
 For each request, the service:
@@ -444,4 +507,4 @@ Spring Boot detects the Google GenAI starters and creates both `GoogleGenAiChatM
 
 ## Next learning step
 
-Evaluate retrieval and grounded-answer quality, then add document-scoped conversation memory so follow-up questions can retain history without crossing document boundaries.
+Evaluate retrieval and grounded-answer quality across varied PDFs, then persist conversations in PostgreSQL so users can return to a chat after an application restart.

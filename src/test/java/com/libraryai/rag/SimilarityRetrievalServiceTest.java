@@ -68,4 +68,41 @@ class SimilarityRetrievalServiceTest {
         )).isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("documentId");
     }
+
+    @Test
+    void searchesSelectedDocumentsInOneGloballyRankedVectorQuery() {
+        String secondDocumentId = "223e4567-e89b-12d3-a456-426614174000";
+        when(vectorStore.similaritySearch(org.mockito.ArgumentMatchers.any(SearchRequest.class)))
+                .thenReturn(List.of());
+
+        MultiDocumentSimilaritySearchResponse response = service.searchAcrossDocuments(
+                "Compare their leave policies",
+                List.of(DOCUMENT_ID, secondDocumentId),
+                5
+        );
+
+        assertThat(response.documentIds()).containsExactly(DOCUMENT_ID, secondDocumentId);
+        ArgumentCaptor<SearchRequest> search = ArgumentCaptor.forClass(SearchRequest.class);
+        verify(vectorStore).similaritySearch(search.capture());
+        assertThat(search.getValue().getTopK()).isEqualTo(5);
+        assertThat(search.getValue().getFilterExpression().toString())
+                .contains("document_id")
+                .contains(DOCUMENT_ID)
+                .contains(secondDocumentId);
+    }
+
+    @Test
+    void rejectsMoreThanThreeDocuments() {
+        assertThatThrownBy(() -> service.searchAcrossDocuments(
+                "question",
+                List.of(
+                        DOCUMENT_ID,
+                        "223e4567-e89b-12d3-a456-426614174000",
+                        "323e4567-e89b-12d3-a456-426614174000",
+                        "423e4567-e89b-12d3-a456-426614174000"
+                ),
+                5
+        )).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at most 3");
+    }
 }
