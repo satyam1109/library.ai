@@ -448,7 +448,7 @@ Ask/follow up ─────────────> POST /api/rag/chat
                       answer + sources + scores + tokens
 ```
 
-The interface is intentionally light and minimal. It shows indexed chunk counts, enforces the three-document limit, displays active context, expands retrieved source chunks with page information, and surfaces token usage for each successful answer.
+The interface is intentionally light and minimal. It shows indexed chunk counts, enforces the three-document limit, displays active context, renders grounded answers as safe GitHub-Flavored Markdown, and surfaces token usage for each successful answer. The two highest-ranked sources are shown initially; any additional matches are available through **Show more sources**, and every source can still be expanded to inspect its complete retrieved chunk and page metadata.
 
 ## Book-scoped chat memory
 

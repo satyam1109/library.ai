@@ -90,7 +90,8 @@ class RagChatServiceTest {
                 .contains("first.pdf")
                 .contains("second.pdf")
                 .contains("What about leave?")
-                .contains("moderately detailed teaching answer");
+                .contains("moderately detailed teaching answer")
+                .contains("GitHub-Flavored Markdown");
         verify(chatMemory, times(2)).add(anyString(), any(Message.class));
     }
 

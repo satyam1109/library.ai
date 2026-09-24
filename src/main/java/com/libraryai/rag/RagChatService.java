@@ -39,6 +39,14 @@ public class RagChatService {
                     concrete example. Prefer roughly 250-450 words with short paragraphs
                     or well-structured bullets, but stay concise for genuinely simple
                     questions and never add filler just to reach a word count.
+
+                    Format the answer as clean GitHub-Flavored Markdown. Use short
+                    descriptive headings only when they improve readability, blank lines
+                    between paragraphs, bullets or numbered steps for grouped ideas,
+                    bold text for important terms, and fenced code blocks with a language
+                    identifier for code. Use tables only for genuine comparisons. Do not
+                    wrap the entire answer in a code block, and keep source citations next
+                    to the claims they support.
                     """)
             .build();
 

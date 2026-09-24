@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { getDocuments, sendRagMessage, uploadDocument } from "./api.js";
 
 const MAX_DOCUMENTS = 3;
@@ -77,11 +79,15 @@ function DocumentCard({ document, selected, disabled, onToggle }) {
 }
 
 function SourceList({ sources }) {
+  const [showAll, setShowAll] = useState(false);
   if (!sources?.length) return null;
+  const hiddenSourceCount = Math.max(0, sources.length - 2);
+  const visibleSources = showAll ? sources : sources.slice(0, 2);
+
   return (
     <div className="sources">
       <div className="sources-label">Sources used</div>
-      {sources.map((source) => {
+      {visibleSources.map((source) => {
         const metadata = source.metadata || {};
         const pages = Array.isArray(metadata.page_numbers)
           ? metadata.page_numbers.join(", ")
@@ -101,7 +107,37 @@ function SourceList({ sources }) {
           </details>
         );
       })}
+      {hiddenSourceCount > 0 && (
+        <button
+          type="button"
+          className="source-list-toggle"
+          aria-expanded={showAll}
+          onClick={() => setShowAll((current) => !current)}
+        >
+          <span>
+            {showAll
+              ? "Show fewer sources"
+              : `Show ${hiddenSourceCount} more source${hiddenSourceCount === 1 ? "" : "s"}`}
+          </span>
+          <span className={`toggle-chevron ${showAll ? "expanded" : ""}`}>
+            <Icon name="chevron" size={15} />
+          </span>
+        </button>
+      )}
     </div>
+  );
+}
+
+function MarkdownAnswer({ children }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+      }}
+    >
+      {children}
+    </ReactMarkdown>
   );
 }
 
@@ -340,7 +376,11 @@ function App() {
             {messages.map((item, index) => (
               <article className={`message ${item.role}`} key={`${item.role}-${index}`}>
                 <div className="message-label">{item.role === "user" ? "You" : item.role === "assistant" ? "Library AI" : "Request error"}</div>
-                <div className="message-body">{item.text}</div>
+                <div className="message-body">
+                  {item.role === "assistant"
+                    ? <MarkdownAnswer>{item.text}</MarkdownAnswer>
+                    : item.text}
+                </div>
                 {item.role === "assistant" && (
                   <>
                     <SourceList sources={item.sources} />
