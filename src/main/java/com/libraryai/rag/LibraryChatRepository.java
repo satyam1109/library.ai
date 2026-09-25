@@ -87,6 +87,16 @@ public class LibraryChatRepository {
                 )
                 """.formatted(schema, schema));
         this.jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS %s.chat_conversation_summaries (
+                    chat_id UUID NOT NULL REFERENCES %s.library_chats(chat_id) ON DELETE CASCADE,
+                    context_version INTEGER NOT NULL,
+                    summary TEXT NOT NULL,
+                    summarized_through_order BIGINT NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (chat_id, context_version)
+                )
+                """.formatted(schema, schema));
+        this.jdbcTemplate.execute("""
                 CREATE INDEX IF NOT EXISTS chat_messages_chat_order_idx
                 ON %s.chat_messages (chat_id, message_order)
                 """.formatted(schema));
@@ -135,6 +145,22 @@ public class LibraryChatRepository {
                 chat.createdAt(),
                 chat.updatedAt()
         );
+    }
+
+    public LibraryChatDetail rename(UUID chatId, String requestedTitle) {
+        if (requestedTitle == null || requestedTitle.isBlank()) {
+            throw new IllegalArgumentException("Chat title must not be blank");
+        }
+        String title = normalizeTitle(requestedTitle);
+        int updated = this.jdbcTemplate.update("""
+                UPDATE %s.library_chats
+                SET title = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE chat_id = ?
+                """.formatted(schema()), title, chatId);
+        if (updated == 0) {
+            throw new IllegalArgumentException("Chat was not found: " + chatId);
+        }
+        return findDetail(chatId);
     }
 
     public LibraryChatContext findContext(UUID chatId) {
@@ -207,26 +233,47 @@ public class LibraryChatRepository {
         return findDetail(chatId);
     }
 
-    public List<StoredChatMessage> findPromptHistory(
+    public ConversationMemoryState findConversationMemory(UUID chatId, int contextVersion) {
+        List<SummaryRow> summaries = this.jdbcTemplate.query("""
+                SELECT summary, summarized_through_order
+                FROM %s.chat_conversation_summaries
+                WHERE chat_id = ? AND context_version = ?
+                """.formatted(schema()), (resultSet, rowNumber) -> new SummaryRow(
+                        resultSet.getString("summary"),
+                        resultSet.getLong("summarized_through_order")
+                ), chatId, contextVersion);
+        SummaryRow summary = summaries.isEmpty() ? new SummaryRow(null, 0L) : summaries.getFirst();
+
+        List<StoredChatMessage> messages = this.jdbcTemplate.query("""
+                SELECT message_order, role, content
+                FROM %s.chat_messages
+                WHERE chat_id = ? AND context_version = ? AND message_order > ?
+                ORDER BY message_order
+                """.formatted(schema()), (resultSet, rowNumber) -> new StoredChatMessage(
+                        resultSet.getLong("message_order"),
+                        resultSet.getString("role"),
+                        resultSet.getString("content")
+                ), chatId, contextVersion, summary.summarizedThroughOrder());
+        return new ConversationMemoryState(
+                summary.summary(), summary.summarizedThroughOrder(), messages
+        );
+    }
+
+    public void saveConversationSummary(
             UUID chatId,
             int contextVersion,
-            int limit) {
-        return this.jdbcTemplate.query("""
-                SELECT role, content
-                FROM (
-                    SELECT role, content, message_order
-                    FROM %s.chat_messages
-                    WHERE chat_id = ? AND context_version = ?
-                    ORDER BY message_order DESC
-                    LIMIT ?
-                ) recent
-                ORDER BY message_order
+            String summary,
+            long summarizedThroughOrder) {
+        this.jdbcTemplate.update("""
+                INSERT INTO %s.chat_conversation_summaries (
+                    chat_id, context_version, summary, summarized_through_order
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT (chat_id, context_version) DO UPDATE
+                SET summary = EXCLUDED.summary,
+                    summarized_through_order = EXCLUDED.summarized_through_order,
+                    updated_at = CURRENT_TIMESTAMP
                 """.formatted(schema()),
-                (resultSet, rowNumber) -> new StoredChatMessage(
-                        resultSet.getString("role"), resultSet.getString("content")
-                ),
-                chatId, contextVersion, limit
-        );
+                chatId, contextVersion, summary, summarizedThroughOrder);
     }
 
     @Transactional
@@ -493,5 +540,8 @@ public class LibraryChatRepository {
             Integer completionTokens,
             Integer totalTokens,
             OffsetDateTime createdAt) {
+    }
+
+    private record SummaryRow(String summary, long summarizedThroughOrder) {
     }
 }

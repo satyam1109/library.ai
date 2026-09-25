@@ -45,11 +45,25 @@ public class PdfIngestionService {
     }
 
     public synchronized PdfIngestionResponse ingest(String fileName, byte[] pdfBytes) {
+        return ingest(fileName, pdfBytes, PdfIngestionProgressListener.NONE);
+    }
+
+    public synchronized PdfIngestionResponse ingest(
+            String fileName,
+            byte[] pdfBytes,
+            PdfIngestionProgressListener progressListener) {
         String documentFingerprint = sha256(pdfBytes);
         UUID documentId = this.documentCatalog.register(fileName, documentFingerprint);
         this.documentCatalog.ensureChunkOwnershipIndex();
 
         try {
+            progressListener.onProgress(new PdfIngestionProgressEvent(
+                    PdfIngestionStage.PROCESSING_PDF,
+                    "Extracting, cleaning, and chunking the PDF",
+                    0,
+                    0,
+                    0
+            ));
             PdfChunkResult chunkResult = this.pdfChunkService.chunkPdf(namedResource(fileName, pdfBytes));
             String ingestionFingerprint = ingestionFingerprint(documentFingerprint, chunkResult.chunks());
             int expectedChunks = chunkResult.chunks().size();
@@ -58,7 +72,8 @@ public class PdfIngestionService {
             if (existingChunks == expectedChunks) {
                 this.documentCatalog.markReady(documentId, existingChunks);
                 return response(
-                        documentId, fileName, documentFingerprint, chunkResult, existingChunks, true
+                        documentId, fileName, documentFingerprint, chunkResult,
+                        existingChunks, 0, true
                 );
             }
 
@@ -66,9 +81,29 @@ public class PdfIngestionService {
                     chunkResult.chunks(), documentId, documentFingerprint, ingestionFingerprint
             );
 
+            progressListener.onProgress(new PdfIngestionProgressEvent(
+                    PdfIngestionStage.INDEXING,
+                    "Creating Gemini embeddings and indexing chunks",
+                    0,
+                    indexedDocuments.size(),
+                    0
+            ));
             // PgVectorStore embeds with RETRIEVAL_DOCUMENT and upserts the original
-            // text plus the complete metadata JSON alongside every vector.
-            this.vectorStore.add(indexedDocuments);
+            // text plus the complete metadata JSON alongside every vector. The
+            // adapter reports each Gemini batch and its exact usage metadata.
+            int embeddingTokens = DocumentEmbeddingProgressContext.track(
+                    indexedDocuments.size(),
+                    progressListener,
+                    () -> this.vectorStore.add(indexedDocuments)
+            );
+
+            progressListener.onProgress(new PdfIngestionProgressEvent(
+                    PdfIngestionStage.FINALIZING,
+                    "Finalizing the searchable document",
+                    indexedDocuments.size(),
+                    indexedDocuments.size(),
+                    embeddingTokens
+            ));
 
             // Replace older chunking results for this document only after the new
             // vectors have been embedded and stored successfully.
@@ -76,7 +111,8 @@ public class PdfIngestionService {
             int storedChunks = countByIngestionFingerprint(documentId, ingestionFingerprint);
             this.documentCatalog.markReady(documentId, storedChunks);
             return response(
-                    documentId, fileName, documentFingerprint, chunkResult, storedChunks, false
+                    documentId, fileName, documentFingerprint, chunkResult,
+                    storedChunks, embeddingTokens, false
             );
         } catch (RuntimeException exception) {
             this.documentCatalog.markFailed(documentId);
@@ -154,6 +190,7 @@ public class PdfIngestionService {
             String documentFingerprint,
             PdfChunkResult result,
             int storedChunks,
+            int embeddingTokens,
             boolean skipped) {
         return new PdfIngestionResponse(
                 documentId.toString(),
@@ -162,6 +199,7 @@ public class PdfIngestionService {
                 result.sourceDocumentCount(),
                 result.chunks().size(),
                 storedChunks,
+                embeddingTokens,
                 skipped
         );
     }

@@ -342,11 +342,12 @@ Example response:
   "sourceDocumentCount": 50,
   "generatedChunkCount": 52,
   "storedChunkCount": 52,
+  "geminiEmbeddingTokens": 14320,
   "skippedAsDuplicate": false
 }
 ```
 
-The service creates one parent row in `library_documents` and returns its UUID as `documentId`. It hashes the PDF and final chunk set, then gives every chunk that same parent ID plus its own deterministic UUID. Re-uploading unchanged content reuses the document ID, returns `skippedAsDuplicate: true`, and does not call Gemini or insert duplicate vectors. If chunking changes for the same document, the new batch is stored successfully before its older vectors are removed.
+The service creates one parent row in `library_documents` and returns its UUID as `documentId`. It hashes the PDF and final chunk set, then gives every chunk that same parent ID plus its own deterministic UUID. `geminiEmbeddingTokens` is accumulated from Gemini's actual response metadata across every embedding batch. Re-uploading unchanged content reuses the document ID, returns `skippedAsDuplicate: true`, reports zero newly consumed embedding tokens, and does not call Gemini or insert duplicate vectors. If chunking changes for the same document, the new batch is stored successfully before its older vectors are removed.
 
 List all indexed parent documents without loading their chunks:
 
@@ -418,6 +419,14 @@ curl -X POST http://localhost:8090/api/chats \
   -d '{}'
 ```
 
+Rename the chat at any time:
+
+```bash
+curl -X PATCH http://localhost:8090/api/chats/<chat-id> \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Spring Boot study notes"}'
+```
+
 Attach one or more existing documents, up to three total:
 
 ```bash
@@ -445,13 +454,44 @@ curl -X POST http://localhost:8090/api/chats/<chat-id>/messages \
 For every message, the backend:
 
 1. Loads the chat and its one to three attached, `READY` documents from PostgreSQL.
-2. Uses recent conversation context to make follow-up retrieval queries clearer.
-3. Creates one query embedding and performs one globally ranked similarity search across only the selected document IDs.
-4. Sends the retrieved text, source metadata, prior messages, and current question to Gemini.
-5. Returns the grounded answer, ranked sources, relevance scores, and model token usage.
-6. Persists the user question, assistant answer, token usage, and exact cited chunks.
+2. Loads the rolling summary plus recent messages for the current context version.
+3. Uses that bounded conversation context to make follow-up retrieval queries clearer.
+4. Creates one query embedding and performs one globally ranked similarity search across only the selected document IDs.
+5. Sends the retrieved text, source metadata, conversation summary, recent messages, and current question to Gemini.
+6. Returns the grounded answer, ranked sources, relevance scores, and model token usage.
+7. Persists the user question, assistant answer, token usage, and exact cited chunks.
 
 Messages are isolated by `chatId`. Adding or removing a document increments the chat's `contextVersion`; older messages remain visible, but only messages from the current context version are supplied to Gemini. This prevents an answer from silently inheriting context from a document that has since been removed.
+
+### Persistent rolling conversation memory
+
+The document-grounded chat keeps long conversations useful without sending the
+entire history to Gemini on every request:
+
+```text
+Library AI system instructions
+             +
+Summary of older conversation
+             +
+Latest 8 messages (verbatim)
+             +
+Current question with retrieved document sources
+```
+
+- Up to 12 unsummarized messages are kept verbatim.
+- Once that threshold is exceeded, Gemini merges the older messages into one
+  concise rolling summary and the latest eight messages remain unchanged.
+- The summary and its last-summarized message marker are stored in PostgreSQL in
+  `chat_conversation_summaries`.
+- Each summary is scoped by both `chatId` and `contextVersion`. Attaching or
+  removing a document therefore starts clean memory for the new document context,
+  while older messages remain available in the UI.
+- The summary helps resolve references such as “compare that with the earlier
+  concept,” but it is explicitly not treated as document evidence and cannot be
+  cited as a source.
+- When compaction occurs, its Gemini usage is added to the answer call's token
+  usage so the returned totals represent all chat-model tokens consumed by that
+  request.
 
 For interactive progress, the frontend sends the same request body to:
 
@@ -463,7 +503,7 @@ Accept: text/event-stream
 The endpoint returns server-sent events from real backend boundaries:
 
 ```text
-progress: UNDERSTANDING  -> validate context and create the Gemini query embedding
+progress: UNDERSTANDING  -> validate context and compact older chat memory when needed
 progress: SEARCHING      -> query embedding is ready; pgvector begins similarity search
 progress: GENERATING     -> top matching chunks are ready; Gemini begins writing
 sources                  -> ranked chunks and metadata are ready for citation navigation
@@ -487,6 +527,10 @@ Ask/follow up ─────────────> POST /api/chats/{chatId}/
                               ↓
                progress → sources → answer fragments → result
 ```
+
+The UI uses `POST /api/chats/{chatId}/documents/upload/stream`. Its SSE events
+show PDF processing, chunk indexing progress, cumulative Gemini embedding token
+usage, finalization, and the completed ingestion response.
 
 The interface is intentionally light and minimal. It shows indexed chunk counts, enforces the three-document limit, displays active context, renders grounded answers progressively as safe GitHub-Flavored Markdown, and surfaces token usage for each successful answer. Citations such as `Source 1` are interactive: selecting one opens its exact retrieved passage in the evidence panel. The two highest-ranked sources are shown initially; any additional matches are available through **Show more sources**, and every source can still be expanded to inspect its complete retrieved chunk and page metadata.
 

@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -30,16 +31,19 @@ public class LibraryChatController {
     private final PdfIngestionService ingestionService;
     private final RagChatService ragChatService;
     private final RagChatStreamService streamService;
+    private final PdfIngestionStreamService ingestionStreamService;
 
     public LibraryChatController(
             LibraryChatRepository chatRepository,
             PdfIngestionService ingestionService,
             RagChatService ragChatService,
-            RagChatStreamService streamService) {
+            RagChatStreamService streamService,
+            PdfIngestionStreamService ingestionStreamService) {
         this.chatRepository = chatRepository;
         this.ingestionService = ingestionService;
         this.ragChatService = ragChatService;
         this.streamService = streamService;
+        this.ingestionStreamService = ingestionStreamService;
     }
 
     @GetMapping
@@ -56,6 +60,13 @@ public class LibraryChatController {
     @GetMapping("/{chatId}")
     public LibraryChatDetail chat(@PathVariable UUID chatId) {
         return this.chatRepository.findDetail(chatId);
+    }
+
+    @PatchMapping("/{chatId}")
+    public LibraryChatDetail rename(
+            @PathVariable UUID chatId,
+            @RequestBody RenameLibraryChatRequest request) {
+        return this.chatRepository.rename(chatId, request.title());
     }
 
     @PostMapping("/{chatId}/documents")
@@ -87,6 +98,25 @@ public class LibraryChatController {
                     chatId, List.of(ingestion.documentId())
             );
             return new ChatDocumentUploadResponse(ingestion, chat);
+        } catch (IOException exception) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "Could not read uploaded PDF", exception
+            );
+        }
+    }
+
+    @PostMapping(
+            value = "/{chatId}/documents/upload/stream",
+            consumes = MediaType.MULTIPART_FORM_DATA_VALUE,
+            produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamUploadAndAttach(
+            @PathVariable UUID chatId,
+            @RequestPart("file") MultipartFile file) {
+        validatePdf(file);
+        try {
+            return this.ingestionStreamService.stream(
+                    chatId, file.getOriginalFilename(), file.getBytes()
+            );
         } catch (IOException exception) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST, "Could not read uploaded PDF", exception

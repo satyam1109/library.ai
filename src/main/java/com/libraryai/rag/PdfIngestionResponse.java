@@ -8,5 +8,6 @@ public record PdfIngestionResponse(
         int sourceDocumentCount,
         int generatedChunkCount,
         int storedChunkCount,
+        int geminiEmbeddingTokens,
         boolean skippedAsDuplicate) {
 }

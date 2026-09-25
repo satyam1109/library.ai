@@ -77,6 +77,16 @@ h1, h2, p { margin-top: 0; }
 .upload-button { width: 100%; border: 1px dashed #bcc8bf; background: #fafbfa; border-radius: 12px; padding: 14px; display: flex; justify-content: center; align-items: center; gap: 9px; font-weight: 600; font-size: 13px; cursor: pointer; color: #315542; }
 .upload-button:hover { border-color: var(--green); background: var(--green-soft); }
 .upload-button:disabled { opacity: .65; cursor: wait; }
+.upload-progress { margin-top: 9px; border: 1px solid #d7e2da; border-radius: 10px; background: #f8fbf9; padding: 10px; }
+.upload-progress-copy, .upload-progress-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.upload-progress-copy { color: #355744; font-size: 10px; font-weight: 700; }
+.upload-progress-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-progress-copy strong { color: var(--green); font-variant-numeric: tabular-nums; }
+.upload-progress-track { height: 5px; margin: 8px 0 6px; border-radius: 99px; background: #dfe9e2; overflow: hidden; }
+.upload-progress-track > span { display: block; height: 100%; border-radius: inherit; background: var(--green); transition: width .2s ease; }
+.upload-progress-track.indeterminate > span { width: 42%; animation: upload-slide 1.2s ease-in-out infinite; }
+.upload-progress-meta { color: #78827b; font-size: 8px; }
+@keyframes upload-slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(260%); } }
 .document-list-heading { margin: 25px 3px 10px; display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
 .icon-button { width: 27px; height: 27px; border: 0; border-radius: 8px; background: transparent; display: grid; place-items: center; color: var(--muted); cursor: pointer; }
 .icon-button:hover { background: var(--soft); color: var(--ink); }
@@ -93,11 +103,19 @@ h1, h2, p { margin-top: 0; }
 .document-check.checked { background: var(--green); border-color: var(--green); }
 .list-state, .empty-library { color: var(--muted); font-size: 12px; padding: 24px 10px; text-align: center; }
 .empty-library { display: flex; flex-direction: column; gap: 8px; align-items: center; }
-.context-lock { margin-top: auto; border-top: 1px solid var(--line); padding: 14px 4px 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
-
-.chat-panel { grid-column: 3; min-width: 0; min-height: 0; position: relative; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; background: #fff; }
+.chat-panel { grid-column: 3; min-width: 0; min-height: 0; position: relative; display: grid; grid-template-rows: auto auto minmax(0, 1fr) minmax(108px, auto); overflow: hidden; background: #fff; }
 .chat-header { min-height: 98px; padding: 25px 38px 19px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; }
 .chat-header h1 { font-family: "Newsreader", Georgia, serif; font-size: 29px; font-weight: 600; letter-spacing: -.025em; margin: 4px 0 0; }
+.chat-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chat-title-row h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.edit-title-button { width: 28px; height: 28px; flex: 0 0 auto; margin-top: 4px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
+.edit-title-button:hover { border-color: var(--line); background: var(--soft); color: var(--green); }
+.chat-title-editor { margin-top: 5px; display: flex; align-items: center; gap: 6px; }
+.chat-title-editor input { width: min(360px, 46vw); height: 36px; border: 1px solid #aebdb2; border-radius: 9px; outline: 0; padding: 0 10px; color: var(--ink); background: #fff; font-size: 13px; }
+.chat-title-editor input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(31, 107, 72, .09); }
+.chat-title-editor button { height: 32px; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; padding: 0 10px; font-size: 10px; font-weight: 700; cursor: pointer; }
+.chat-title-editor button[type="submit"] { border-color: var(--green); background: var(--green); color: #fff; }
+.chat-title-editor button:disabled { opacity: .55; cursor: default; }
 .context-pills { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 56%; }
 .context-pill { min-width: 0; max-width: 190px; border: 1px solid var(--line); border-radius: 99px; padding: 6px 9px; display: flex; align-items: center; gap: 5px; color: #4f5a53; background: #fafbfa; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .notice { margin: 14px 38px 0; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 12px; }
@@ -212,7 +230,7 @@ h1, h2, p { margin-top: 0; }
 .evidence-score { margin-top: 13px; display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 10px; }
 .evidence-score strong { color: var(--green); font-size: 12px; }
 
-.composer { margin: 0 auto 22px; width: min(820px, calc(100% - 76px)); border: 1px solid #d8ded9; border-radius: 15px; background: #fff; padding: 12px 12px 7px 15px; display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 7px 10px; box-shadow: 0 10px 30px rgba(23, 33, 27, .06); }
+.composer { min-height: 86px; margin: 0 auto 22px; width: min(820px, calc(100% - 76px)); border: 1px solid #d8ded9; border-radius: 15px; background: #fff; padding: 12px 12px 7px 15px; display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 7px 10px; box-shadow: 0 10px 30px rgba(23, 33, 27, .06); }
 .composer textarea { width: 100%; min-height: 42px; max-height: 130px; resize: none; border: 0; outline: 0; padding: 10px 2px 7px; color: var(--ink); line-height: 1.5; font-size: 13px; }
 .composer textarea::placeholder { color: #959c97; }
 .send-button { width: 40px; height: 40px; align-self: center; border: 0; border-radius: 11px; display: grid; place-items: center; color: #fff; background: var(--green); cursor: pointer; }

@@ -34,9 +34,11 @@ class RagChatServiceTest {
 
     private final SimilarityRetrievalService retrievalService = mock(SimilarityRetrievalService.class);
     private final LibraryChatRepository chatRepository = mock(LibraryChatRepository.class);
+    private final ConversationMemoryService conversationMemoryService =
+            mock(ConversationMemoryService.class);
     private final ChatModel chatModel = mock(ChatModel.class);
     private final RagChatService service = new RagChatService(
-            retrievalService, chatRepository, chatModel
+            retrievalService, chatRepository, conversationMemoryService, chatModel
     );
 
     @Test
@@ -45,10 +47,12 @@ class RagChatServiceTest {
                 CHAT_ID.toString(), "Policy chat", 2,
                 List.of(FIRST_DOCUMENT_ID, SECOND_DOCUMENT_ID)
         ));
-        when(chatRepository.findPromptHistory(CHAT_ID, 2, 20)).thenReturn(List.of(
-                new StoredChatMessage("USER", "Compare the policies"),
-                new StoredChatMessage("ASSISTANT", "What aspect should I compare?")
-        ));
+        when(conversationMemoryService.prepare(CHAT_ID, 2)).thenReturn(
+                new PreparedConversationMemory(null, List.of(
+                        new StoredChatMessage(1, "USER", "Compare the policies"),
+                        new StoredChatMessage(2, "ASSISTANT", "What aspect should I compare?")
+                ), null, null, null)
+        );
         SimilaritySearchResult firstSource = source(1, FIRST_DOCUMENT_ID, "first.pdf");
         SimilaritySearchResult secondSource = source(2, SECOND_DOCUMENT_ID, "second.pdf");
         when(retrievalService.searchAcrossDocuments(anyString(), any(), any()))
@@ -128,7 +132,9 @@ class RagChatServiceTest {
         when(chatRepository.findContext(CHAT_ID)).thenReturn(new LibraryChatContext(
                 CHAT_ID.toString(), "DI chat", 1, List.of(FIRST_DOCUMENT_ID)
         ));
-        when(chatRepository.findPromptHistory(CHAT_ID, 1, 20)).thenReturn(List.of());
+        when(conversationMemoryService.prepare(CHAT_ID, 1)).thenReturn(
+                new PreparedConversationMemory(null, List.of(), null, null, null)
+        );
         SimilaritySearchResult source = source(1, FIRST_DOCUMENT_ID, "first.pdf");
         when(retrievalService.searchAcrossDocuments(anyString(), any(), any()))
                 .thenAnswer(invocation -> {
@@ -163,6 +169,54 @@ class RagChatServiceTest {
                 eq(CHAT_ID), eq(1), eq("What is DI?"),
                 eq("Dependency injection supplies dependencies. [Source 1]"),
                 eq(List.of(source)), eq(100), eq(25), eq(125)
+        );
+    }
+
+    @Test
+    void includesOlderSummaryAndRecentMessagesAndCountsSummaryTokens() {
+        when(chatRepository.findContext(CHAT_ID)).thenReturn(new LibraryChatContext(
+                CHAT_ID.toString(), "Long chat", 3, List.of(FIRST_DOCUMENT_ID)
+        ));
+        when(conversationMemoryService.prepare(CHAT_ID, 3)).thenReturn(
+                new PreparedConversationMemory(
+                        "The user is comparing bean lifecycle behavior.",
+                        List.of(new StoredChatMessage(
+                                21, "USER", "Focus on proxy creation next."
+                        )),
+                        40, 10, 50
+                )
+        );
+        SimilaritySearchResult source = source(1, FIRST_DOCUMENT_ID, "first.pdf");
+        when(retrievalService.searchAcrossDocuments(anyString(), any(), any()))
+                .thenAnswer(invocation -> {
+                    QueryEmbeddingProgressContext.embeddingReady();
+                    return new MultiDocumentSimilaritySearchResponse(
+                            "query", List.of(FIRST_DOCUMENT_ID), 5, 1, List.of(source)
+                    );
+                });
+        ChatResponse responseWithUsage = modelResponse(
+                "Proxy creation happens here. [Source 1]"
+        );
+        when(chatModel.call(any(Prompt.class))).thenReturn(responseWithUsage);
+
+        RagChatResponse response = service.chat(
+                CHAT_ID, new ChatMessageRequest("How does that happen?", 5)
+        );
+
+        ArgumentCaptor<Prompt> prompt = ArgumentCaptor.forClass(Prompt.class);
+        verify(chatModel).call(prompt.capture());
+        assertThat(prompt.getValue().getInstructions().toString())
+                .contains("The user is comparing bean lifecycle behavior.")
+                .contains("Focus on proxy creation next.")
+                .contains("How does that happen?")
+                .contains("not document evidence");
+        assertThat(response.promptTokens()).isEqualTo(140);
+        assertThat(response.completionTokens()).isEqualTo(35);
+        assertThat(response.totalTokens()).isEqualTo(175);
+        verify(chatRepository).saveTurn(
+                eq(CHAT_ID), eq(3), eq("How does that happen?"),
+                eq("Proxy creation happens here. [Source 1]"),
+                eq(List.of(source)), eq(140), eq(35), eq(175)
         );
     }
 

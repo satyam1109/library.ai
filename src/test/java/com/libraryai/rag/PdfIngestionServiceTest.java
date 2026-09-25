@@ -51,6 +51,7 @@ class PdfIngestionServiceTest {
         assertThat(response.skippedAsDuplicate()).isTrue();
         assertThat(response.documentId()).isEqualTo(documentId.toString());
         assertThat(response.storedChunkCount()).isEqualTo(2);
+        assertThat(response.geminiEmbeddingTokens()).isZero();
         verify(vectorStore, never()).add(any());
         verify(documentCatalog).markReady(documentId, 2);
     }
@@ -72,6 +73,8 @@ class PdfIngestionServiceTest {
         verify(jdbcTemplate).update(anyString(), anyString(), anyString());
 
         assertThat(response.skippedAsDuplicate()).isFalse();
+        // The mocked vector store does not call the embedding adapter.
+        assertThat(response.geminiEmbeddingTokens()).isZero();
         assertThat(documents.getValue()).hasSize(2).allSatisfy(document -> {
             assertThat(document.getId()).matches("[a-f0-9-]{36}");
             assertThat(document.getMetadata())

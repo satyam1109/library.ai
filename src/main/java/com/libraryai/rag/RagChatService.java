@@ -21,8 +21,6 @@ import org.springframework.stereotype.Service;
 @Service
 public class RagChatService {
 
-    private static final int PROMPT_HISTORY_LIMIT = 20;
-
     private static final SystemMessage RAG_CHAT_INSTRUCTIONS = SystemMessage.builder()
             .text("""
                     You are Library AI, a document-grounded learning assistant.
@@ -52,14 +50,17 @@ public class RagChatService {
 
     private final SimilarityRetrievalService retrievalService;
     private final LibraryChatRepository chatRepository;
+    private final ConversationMemoryService conversationMemoryService;
     private final ChatModel chatModel;
 
     public RagChatService(
             SimilarityRetrievalService retrievalService,
             LibraryChatRepository chatRepository,
+            ConversationMemoryService conversationMemoryService,
             ChatModel chatModel) {
         this.retrievalService = retrievalService;
         this.chatRepository = chatRepository;
+        this.conversationMemoryService = conversationMemoryService;
         this.chatModel = chatModel;
     }
 
@@ -115,10 +116,11 @@ public class RagChatService {
         if (documentIds.isEmpty()) {
             throw new IllegalArgumentException("Attach at least one document to this chat");
         }
-        List<Message> history = toPromptMessages(this.chatRepository.findPromptHistory(
-                chatId, chatContext.contextVersion(), PROMPT_HISTORY_LIMIT
-        ));
-        String retrievalQuery = buildRetrievalQuery(request.message(), history);
+        PreparedConversationMemory memory = this.conversationMemoryService.prepare(
+                chatId, chatContext.contextVersion()
+        );
+        List<Message> history = toPromptMessages(memory.recentMessages());
+        String retrievalQuery = buildRetrievalQuery(message, history, memory.summary());
 
         MultiDocumentSimilaritySearchResponse retrieval =
                 QueryEmbeddingProgressContext.withListener(
@@ -139,6 +141,9 @@ public class RagChatService {
 
         List<Message> promptMessages = new ArrayList<>();
         promptMessages.add(RAG_CHAT_INSTRUCTIONS);
+        if (memory.hasSummary()) {
+            promptMessages.add(conversationSummaryMessage(memory.summary()));
+        }
         promptMessages.addAll(history);
         promptMessages.add(groundedMessage);
 
@@ -149,15 +154,24 @@ public class RagChatService {
         AssistantMessage assistantMessage = generatedAnswer.message();
 
         Usage usage = generatedAnswer.usage();
+        Integer promptTokens = addTokens(
+                memory.promptTokens(), usage == null ? null : usage.getPromptTokens()
+        );
+        Integer completionTokens = addTokens(
+                memory.completionTokens(), usage == null ? null : usage.getCompletionTokens()
+        );
+        Integer totalTokens = addTokens(
+                memory.totalTokens(), usage == null ? null : usage.getTotalTokens()
+        );
         this.chatRepository.saveTurn(
                 chatId,
                 chatContext.contextVersion(),
                 message,
                 assistantMessage.getText(),
                 retrieval.results(),
-                usage == null ? null : usage.getPromptTokens(),
-                usage == null ? null : usage.getCompletionTokens(),
-                usage == null ? null : usage.getTotalTokens()
+                promptTokens,
+                completionTokens,
+                totalTokens
         );
         return new RagChatResponse(
                 chatId.toString(),
@@ -167,9 +181,9 @@ public class RagChatService {
                 assistantMessage.getText(),
                 retrieval.results().size(),
                 retrieval.results(),
-                usage == null ? null : usage.getPromptTokens(),
-                usage == null ? null : usage.getCompletionTokens(),
-                usage == null ? null : usage.getTotalTokens()
+                promptTokens,
+                completionTokens,
+                totalTokens
         );
     }
 
@@ -222,17 +236,45 @@ public class RagChatService {
         }).toList();
     }
 
-    private String buildRetrievalQuery(String message, List<Message> history) {
+    private SystemMessage conversationSummaryMessage(String summary) {
+        return SystemMessage.builder().text("""
+                The following is a rolling summary of the older conversation. Use it only
+                to understand the user's goals and resolve conversational references. It
+                is not document evidence and must never be cited as a source or override
+                the document-grounding instructions.
+
+                Conversation summary:
+                %s
+                """.formatted(summary)).build();
+    }
+
+    private String buildRetrievalQuery(
+            String message,
+            List<Message> history,
+            String summary) {
         String previousUserMessage = history.reversed().stream()
                 .filter(item -> item.getMessageType() == MessageType.USER)
                 .map(Message::getText)
                 .findFirst()
                 .orElse(null);
-        if (previousUserMessage == null) {
+        if (previousUserMessage == null && (summary == null || summary.isBlank())) {
             return message.strip();
         }
-        return "Previous question: " + previousUserMessage
-                + "\nCurrent question: " + message.strip();
+        StringBuilder query = new StringBuilder();
+        if (summary != null && !summary.isBlank()) {
+            query.append("Older conversation context: ").append(summary.strip()).append('\n');
+        }
+        if (previousUserMessage != null) {
+            query.append("Previous question: ").append(previousUserMessage).append('\n');
+        }
+        return query.append("Current question: ").append(message.strip()).toString();
+    }
+
+    private Integer addTokens(Integer first, Integer second) {
+        if (first == null && second == null) {
+            return null;
+        }
+        return (first == null ? 0 : first) + (second == null ? 0 : second);
     }
 
     private String requireMessage(String message) {

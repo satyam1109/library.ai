@@ -38,7 +38,13 @@ final class RetrievalTaskEmbeddingModel implements EmbeddingModel {
         var options = request.getOptions() instanceof GoogleGenAiTextEmbeddingOptions googleOptions
                 ? googleOptions
                 : this.documentOptions;
-        return this.delegate.call(new EmbeddingRequest(request.getInstructions(), options));
+        EmbeddingResponse response = this.delegate.call(
+                new EmbeddingRequest(request.getInstructions(), options)
+        );
+        DocumentEmbeddingProgressContext.batchCompleted(
+                request.getInstructions().size(), response
+        );
+        return response;
     }
 
     @Override

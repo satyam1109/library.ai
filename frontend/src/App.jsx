@@ -8,8 +8,9 @@ import {
   getChat,
   getChats,
   getDocuments,
+  renameChat,
   streamChatMessage,
-  uploadChatDocument,
+  streamChatDocument,
 } from "./api.js";
 
 const MAX_DOCUMENTS = 3;
@@ -40,6 +41,7 @@ function Icon({ name, size = 18 }) {
     chat: <><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/><path d="M8 9h8M8 13h5"/></>,
     library: <><path d="M4 19.5V5a2 2 0 0 1 2-2h3v18H6a2 2 0 0 1-2-1.5z"/><path d="M9 5h5v16H9zM14 7l4-1 2 14-6 1z"/></>,
     panel: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></>,
+    edit: <><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></>,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -316,6 +318,30 @@ function RagProgress({ progress, documentCount }) {
   );
 }
 
+function UploadProgress({ progress }) {
+  if (!progress) return null;
+  const hasChunkProgress = progress.totalChunks > 0;
+  const percent = hasChunkProgress
+    ? Math.round((progress.completedChunks / progress.totalChunks) * 100)
+    : progress.stage === "FINALIZING" ? 100 : null;
+
+  return (
+    <div className="upload-progress" role="status" aria-live="polite">
+      <div className="upload-progress-copy">
+        <span>{progress.message}</span>
+        <strong>{percent == null ? "Working…" : `${percent}%`}</strong>
+      </div>
+      <div className={`upload-progress-track ${percent == null ? "indeterminate" : ""}`}>
+        <span style={percent == null ? undefined : { width: `${percent}%` }} />
+      </div>
+      <div className="upload-progress-meta">
+        <span>{hasChunkProgress ? `${progress.completedChunks}/${progress.totalChunks} chunks` : "Preparing document"}</span>
+        <span>{(progress.geminiEmbeddingTokens || 0).toLocaleString()} Gemini tokens</span>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [chats, setChats] = useState([]);
   const [activeChatId, setActiveChatId] = useState(loadActiveChatId);
@@ -325,7 +351,11 @@ function App() {
   const [message, setMessage] = useState("");
   const [loadingWorkspace, setLoadingWorkspace] = useState(true);
   const [changingContext, setChangingContext] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [renaming, setRenaming] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(null);
   const [sending, setSending] = useState(false);
   const [progress, setProgress] = useState(null);
   const [streamedAnswer, setStreamedAnswer] = useState("");
@@ -373,6 +403,7 @@ function App() {
       setActiveChatId(detail.chatId);
       setActiveChat(detail);
       setMessages(normalizeMessages(detail));
+      setEditingTitle(false);
     } catch (error) {
       setNotice({ type: "error", text: error.message });
     }
@@ -470,11 +501,20 @@ function App() {
     }
 
     setUploading(true);
+    setUploadProgress({
+      stage: "UPLOADING",
+      message: `Uploading ${file.name}`,
+      completedChunks: 0,
+      totalChunks: 0,
+      geminiEmbeddingTokens: 0,
+    });
     setNotice({ type: "info", text: `Indexing ${file.name}…` });
     try {
       if (!activeChatId) throw new Error("Create a chat before uploading a document.");
       if (selectedIds.length >= MAX_DOCUMENTS) throw new Error("This chat already has 3 documents.");
-      const result = await uploadChatDocument(activeChatId, file);
+      const result = await streamChatDocument(activeChatId, file, {
+        onProgress: setUploadProgress,
+      });
       setActiveChat(result.chat);
       setMessages(normalizeMessages(result.chat));
       setDocuments(await getDocuments());
@@ -483,12 +523,13 @@ function App() {
         type: "success",
         text: result.ingestion.skippedAsDuplicate
           ? `${file.name} was already indexed. Existing document selected.`
-          : `${file.name} is ready with ${result.ingestion.storedChunkCount} chunks.`,
+          : `${file.name} is ready with ${result.ingestion.storedChunkCount} chunks and used ${result.ingestion.geminiEmbeddingTokens.toLocaleString()} Gemini embedding tokens.`,
       });
     } catch (error) {
       setNotice({ type: "error", text: error.message });
     } finally {
       setUploading(false);
+      setUploadProgress(null);
     }
   }
 
@@ -510,8 +551,32 @@ function App() {
       setMessage("");
       setNotice(null);
       setActiveSource(null);
+      setEditingTitle(false);
     } catch (error) {
       setNotice({ type: "error", text: error.message });
+    }
+  }
+
+  function beginRename() {
+    if (!activeChat || sending) return;
+    setTitleDraft(activeChat.title);
+    setEditingTitle(true);
+  }
+
+  async function saveTitle(event) {
+    event.preventDefault();
+    const cleanTitle = titleDraft.trim();
+    if (!cleanTitle || !activeChatId || renaming) return;
+    setRenaming(true);
+    try {
+      const detail = await renameChat(activeChatId, cleanTitle);
+      setActiveChat(detail);
+      setEditingTitle(false);
+      await refreshChats();
+    } catch (error) {
+      setNotice({ type: "error", text: error.message });
+    } finally {
+      setRenaming(false);
     }
   }
 
@@ -655,6 +720,7 @@ function App() {
             <Icon name="upload" size={18} />
             <span>{uploading ? "Indexing document…" : "Upload a PDF"}</span>
           </button>
+          <UploadProgress progress={uploadProgress} />
 
           <div className="document-list-heading indexed-heading">
             <span>Indexed documents</span>
@@ -679,16 +745,37 @@ function App() {
             ))}
           </div>
 
-          <div className="context-lock">
-            Only embeddings from documents attached to this chat are searched. Changing documents starts a new context version without deleting older messages.
-          </div>
         </aside>}
 
         <main className="chat-panel">
           <div className="chat-header">
             <div>
               <span className="eyebrow">Document chat</span>
-              <h1>{activeChat?.title || (selectedDocuments.length ? "Ask your library" : "Select your sources")}</h1>
+              {editingTitle ? (
+                <form className="chat-title-editor" onSubmit={saveTitle}>
+                  <input
+                    value={titleDraft}
+                    onChange={(event) => setTitleDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") setEditingTitle(false);
+                    }}
+                    maxLength="80"
+                    autoFocus
+                    aria-label="Chat name"
+                  />
+                  <button type="submit" disabled={renaming || !titleDraft.trim()}>Save</button>
+                  <button type="button" onClick={() => setEditingTitle(false)}>Cancel</button>
+                </form>
+              ) : (
+                <div className="chat-title-row">
+                  <h1>{activeChat?.title || (selectedDocuments.length ? "Ask your library" : "Select your sources")}</h1>
+                  {activeChat && (
+                    <button type="button" className="edit-title-button" onClick={beginRename} aria-label="Rename chat">
+                      <Icon name="edit" size={14} />
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
             <div className="context-pills">
               {selectedDocuments.map((document) => (
