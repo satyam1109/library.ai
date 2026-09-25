@@ -4,7 +4,8 @@ import java.util.List;
 
 /** Answer, evidence, and usage for one multi-document RAG chat turn. */
 public record RagChatResponse(
-        String conversationId,
+        String chatId,
+        int contextVersion,
         List<String> documentIds,
         String message,
         String answer,

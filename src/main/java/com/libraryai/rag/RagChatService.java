@@ -1,14 +1,11 @@
 package com.libraryai.rag;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Consumer;
 
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
@@ -20,9 +17,11 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.stereotype.Service;
 
-/** Multi-document conversational RAG with memory isolated by context selection. */
+/** Multi-document conversational RAG whose context is owned by a persisted chat. */
 @Service
 public class RagChatService {
+
+    private static final int PROMPT_HISTORY_LIMIT = 20;
 
     private static final SystemMessage RAG_CHAT_INSTRUCTIONS = SystemMessage.builder()
             .text("""
@@ -52,29 +51,28 @@ public class RagChatService {
             .build();
 
     private final SimilarityRetrievalService retrievalService;
-    private final DocumentCatalogRepository documentCatalog;
+    private final LibraryChatRepository chatRepository;
     private final ChatModel chatModel;
-    private final ChatMemory chatMemory;
 
     public RagChatService(
             SimilarityRetrievalService retrievalService,
-            DocumentCatalogRepository documentCatalog,
-            ChatModel chatModel,
-            ChatMemory chatMemory) {
+            LibraryChatRepository chatRepository,
+            ChatModel chatModel) {
         this.retrievalService = retrievalService;
-        this.documentCatalog = documentCatalog;
+        this.chatRepository = chatRepository;
         this.chatModel = chatModel;
-        this.chatMemory = chatMemory;
     }
 
-    public RagChatResponse chat(RagChatRequest request) {
-        return chat(request, RagChatProgressListener.NONE);
+    public RagChatResponse chat(UUID chatId, ChatMessageRequest request) {
+        return chat(chatId, request, RagChatProgressListener.NONE);
     }
 
     public RagChatResponse chat(
-            RagChatRequest request,
+            UUID chatId,
+            ChatMessageRequest request,
             RagChatProgressListener progressListener) {
         return executeChat(
+                chatId,
                 request,
                 progressListener,
                 ignored -> { },
@@ -84,15 +82,17 @@ public class RagChatService {
     }
 
     /**
-     * Runs the same RAG flow as {@link #chat(RagChatRequest)}, while exposing
+     * Runs the same RAG flow as {@link #chat(UUID, ChatMessageRequest)}, while exposing
      * retrieved sources and Gemini's incremental answer text to an SSE client.
      */
     public RagChatResponse streamChat(
-            RagChatRequest request,
+            UUID chatId,
+            ChatMessageRequest request,
             RagChatProgressListener progressListener,
             Consumer<List<SimilaritySearchResult>> sourcesListener,
             Consumer<String> tokenListener) {
         return executeChat(
+                chatId,
                 request,
                 progressListener,
                 sourcesListener,
@@ -102,16 +102,22 @@ public class RagChatService {
     }
 
     private RagChatResponse executeChat(
-            RagChatRequest request,
+            UUID chatId,
+            ChatMessageRequest request,
             RagChatProgressListener progressListener,
             Consumer<List<SimilaritySearchResult>> sourcesListener,
             Consumer<String> tokenListener,
             boolean streamAnswer) {
         progressListener.onStage(RagChatProgressStage.UNDERSTANDING);
-        UUID conversationId = requireConversationId(request.conversationId());
-        List<String> documentIds = requireReadyDocuments(request.documentIds());
-        String memoryKey = memoryKey(conversationId, documentIds);
-        List<Message> history = this.chatMemory.get(memoryKey);
+        String message = requireMessage(request.message());
+        LibraryChatContext chatContext = this.chatRepository.findContext(chatId);
+        List<String> documentIds = chatContext.documentIds();
+        if (documentIds.isEmpty()) {
+            throw new IllegalArgumentException("Attach at least one document to this chat");
+        }
+        List<Message> history = toPromptMessages(this.chatRepository.findPromptHistory(
+                chatId, chatContext.contextVersion(), PROMPT_HISTORY_LIMIT
+        ));
         String retrievalQuery = buildRetrievalQuery(request.message(), history);
 
         MultiDocumentSimilaritySearchResponse retrieval =
@@ -127,9 +133,8 @@ public class RagChatService {
         sourcesListener.accept(retrieval.results());
         progressListener.onStage(RagChatProgressStage.GENERATING);
 
-        UserMessage userMessage = UserMessage.builder().text(request.message().strip()).build();
         UserMessage groundedMessage = UserMessage.builder()
-                .text(buildGroundedMessage(request.message().strip(), retrieval.results()))
+                .text(buildGroundedMessage(message, retrieval.results()))
                 .build();
 
         List<Message> promptMessages = new ArrayList<>();
@@ -142,14 +147,23 @@ public class RagChatService {
                 ? streamAnswer(prompt, tokenListener)
                 : completeAnswer(prompt);
         AssistantMessage assistantMessage = generatedAnswer.message();
-        this.chatMemory.add(memoryKey, userMessage);
-        this.chatMemory.add(memoryKey, assistantMessage);
 
         Usage usage = generatedAnswer.usage();
+        this.chatRepository.saveTurn(
+                chatId,
+                chatContext.contextVersion(),
+                message,
+                assistantMessage.getText(),
+                retrieval.results(),
+                usage == null ? null : usage.getPromptTokens(),
+                usage == null ? null : usage.getCompletionTokens(),
+                usage == null ? null : usage.getTotalTokens()
+        );
         return new RagChatResponse(
-                conversationId.toString(),
+                chatId.toString(),
+                chatContext.contextVersion(),
                 documentIds,
-                request.message().strip(),
+                message,
                 assistantMessage.getText(),
                 retrieval.results().size(),
                 retrieval.results(),
@@ -199,66 +213,16 @@ public class RagChatService {
     private record GeneratedAnswer(AssistantMessage message, Usage usage) {
     }
 
-    private UUID requireConversationId(String rawConversationId) {
-        if (rawConversationId == null || rawConversationId.isBlank()) {
-            throw new IllegalArgumentException("conversationId must not be blank");
-        }
-        try {
-            return UUID.fromString(rawConversationId.strip());
-        } catch (IllegalArgumentException exception) {
-            throw new IllegalArgumentException("conversationId must be a valid UUID", exception);
-        }
-    }
-
-    private List<String> requireReadyDocuments(List<String> requestedDocumentIds) {
-        if (requestedDocumentIds == null || requestedDocumentIds.isEmpty()) {
-            throw new IllegalArgumentException("Select at least one document");
-        }
-        if (requestedDocumentIds.size() > 3) {
-            throw new IllegalArgumentException("A chat can use at most 3 documents");
-        }
-
-        List<String> documentIds = requestedDocumentIds.stream()
-                .map(this::requireDocumentId)
-                .distinct()
-                .toList();
-        if (documentIds.size() != requestedDocumentIds.size()) {
-            throw new IllegalArgumentException("documentIds must not contain duplicates");
-        }
-        for (String documentId : documentIds) {
-            if (!this.documentCatalog.isReady(UUID.fromString(documentId))) {
-                throw new IllegalArgumentException(
-                        "documentId was not found or is not ready: " + documentId
-                );
+    private List<Message> toPromptMessages(List<StoredChatMessage> storedMessages) {
+        return storedMessages.stream().map(stored -> {
+            if ("USER".equals(stored.role())) {
+                return (Message) UserMessage.builder().text(stored.text()).build();
             }
-        }
-        return documentIds;
-    }
-
-    private String requireDocumentId(String rawDocumentId) {
-        if (rawDocumentId == null || rawDocumentId.isBlank()) {
-            throw new IllegalArgumentException("documentId must not be blank");
-        }
-        try {
-            return UUID.fromString(rawDocumentId.strip()).toString();
-        } catch (IllegalArgumentException exception) {
-            throw new IllegalArgumentException("documentId must be a valid UUID", exception);
-        }
-    }
-
-    private String memoryKey(UUID conversationId, List<String> documentIds) {
-        String contextIdentity = documentIds.stream()
-                .sorted(Comparator.naturalOrder())
-                .reduce((left, right) -> left + ":" + right)
-                .orElseThrow();
-        UUID contextId = UUID.nameUUIDFromBytes(contextIdentity.getBytes(StandardCharsets.UTF_8));
-        return "rag:" + conversationId + ":" + contextId;
+            return (Message) AssistantMessage.builder().content(stored.text()).build();
+        }).toList();
     }
 
     private String buildRetrievalQuery(String message, List<Message> history) {
-        if (message == null || message.isBlank()) {
-            throw new IllegalArgumentException("message must not be blank");
-        }
         String previousUserMessage = history.reversed().stream()
                 .filter(item -> item.getMessageType() == MessageType.USER)
                 .map(Message::getText)
@@ -269,6 +233,13 @@ public class RagChatService {
         }
         return "Previous question: " + previousUserMessage
                 + "\nCurrent question: " + message.strip();
+    }
+
+    private String requireMessage(String message) {
+        if (message == null || message.isBlank()) {
+            throw new IllegalArgumentException("message must not be blank");
+        }
+        return message.strip();
     }
 
     private String buildGroundedMessage(

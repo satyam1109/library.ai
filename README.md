@@ -28,8 +28,9 @@ The project is intentionally built in small stages so that each AI concept is un
 - [x] Retrieve the top matching chunks with cosine similarity.
 - [x] Extract and chunk PDF text.
 - [x] Generate a document-grounded Gemini answer with inspectable sources.
-- [x] Select up to three documents as one isolated chat context.
-- [x] Retain in-memory RAG conversation history for follow-up questions.
+- [x] Create persistent chats and attach up to three documents to each chat.
+- [x] Persist RAG messages, token usage, and cited evidence in PostgreSQL.
+- [x] Restrict every chat retrieval to its server-owned attached documents.
 - [x] Add a responsive, light React UI connected to upload, catalog, and chat APIs.
 
 ## Current architecture
@@ -61,7 +62,8 @@ PDF upload
     -> Gemini RETRIEVAL_DOCUMENT embeddings
     -> PostgreSQL library_chunks (documentId + text + metadata + vector)
 
-Question + 1-3 documentIds
+Question + chatId
+    -> load the chat's 1-3 attached documentIds from PostgreSQL
     -> Gemini RETRIEVAL_QUERY embedding
     -> one globally ranked pgvector search filtered to the selected documentIds
     -> top matching original chunks + metadata + relevance score
@@ -70,7 +72,7 @@ Question + 1-3 documentIds
     -> answer + source chunks + token usage
 ```
 
-At least one and at most three `documentIds` are required. The pgvector `IN` filter prevents chunks outside that explicit selection from entering the prompt. Retrieved text is treated as untrusted reference material, and Gemini is instructed to answer only from those sources and cite them as `[Source N]`.
+A chat owns at least one and at most three document attachments. The client sends only the `chatId` and question; the server loads the allowed document IDs and applies the pgvector `IN` filter. This prevents a client from broadening retrieval beyond the chat. Retrieved text is treated as untrusted reference material, and Gemini is instructed to answer only from those sources and cite them as `[Source N]`.
 
 ## Technology versions
 
@@ -408,17 +410,33 @@ This endpoint is currently stateless. It does not mix the basic `/api/ai/chat` m
 
 ### Chat with up to three documents
 
-The UI uses the conversational multi-document endpoint:
+Create a persistent chat:
 
 ```bash
-curl -X POST http://localhost:8090/api/rag/chat \
+curl -X POST http://localhost:8090/api/chats \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+Attach one or more existing documents, up to three total:
+
+```bash
+curl -X POST http://localhost:8090/api/chats/<chat-id>/documents \
   -H 'Content-Type: application/json' \
   -d '{
-    "conversationId":"923e4567-e89b-12d3-a456-426614174000",
     "documentIds":[
       "<first-ready-document-uuid>",
       "<second-ready-document-uuid>"
-    ],
+    ]
+  }'
+```
+
+Ask a question in that chat:
+
+```bash
+curl -X POST http://localhost:8090/api/chats/<chat-id>/messages \
+  -H 'Content-Type: application/json' \
+  -d '{
     "message":"Compare how these documents explain collection behavior.",
     "topK":5
   }'
@@ -426,19 +444,19 @@ curl -X POST http://localhost:8090/api/rag/chat \
 
 For every message, the backend:
 
-1. Validates the conversation UUID and one to three unique, `READY` documents.
+1. Loads the chat and its one to three attached, `READY` documents from PostgreSQL.
 2. Uses recent conversation context to make follow-up retrieval queries clearer.
 3. Creates one query embedding and performs one globally ranked similarity search across only the selected document IDs.
 4. Sends the retrieved text, source metadata, prior messages, and current question to Gemini.
 5. Returns the grounded answer, ranked sources, relevance scores, and model token usage.
-6. Retains the raw user question and assistant answer in Spring AI `ChatMemory`.
+6. Persists the user question, assistant answer, token usage, and exact cited chunks.
 
-Memory is isolated by both `conversationId` and the normalized set of selected document IDs. Even if a client accidentally reuses one conversation ID with a different document selection, the histories cannot mix. The current backend memory repository is in-process, so model memory is cleared when Spring Boot restarts.
+Messages are isolated by `chatId`. Adding or removing a document increments the chat's `contextVersion`; older messages remain visible, but only messages from the current context version are supplied to Gemini. This prevents an answer from silently inheriting context from a document that has since been removed.
 
 For interactive progress, the frontend sends the same request body to:
 
 ```http
-POST /api/rag/chat/stream
+POST /api/chats/{chatId}/messages/stream
 Accept: text/event-stream
 ```
 
@@ -454,22 +472,29 @@ result                    -> complete RagChatResponse with answer, sources, and 
 failure                   -> safe error message plus the stage that failed
 ```
 
-The original JSON `/api/rag/chat` endpoint remains available for non-streaming clients. The streaming endpoint uses Spring AI's `ChatModel.stream(Prompt)` with the same Gemini model, API key, prompt, retrieval results, and chat memory as the JSON flow. Streaming work runs on a bounded application executor rather than holding a servlet request thread during the external model calls.
+The JSON `/api/chats/{chatId}/messages` endpoint is available for non-streaming clients. The streaming endpoint uses Spring AI's `ChatModel.stream(Prompt)` with the same Gemini model, API key, prompt, retrieval results, and persisted history as the JSON flow. Streaming work runs on a bounded application executor rather than holding a servlet request thread during the external model calls.
 
-The frontend stores the active `conversationId`, selected document IDs, rendered messages, sources, and token usage in browser `sessionStorage`. This keeps the visible chat and the same backend memory key across page refreshes in the current browser tab. Closing the tab clears this browser-side session. The frontend locks document selection after the first message; choose **New chat** to generate a fresh conversation ID and select a different context. Uploads use the existing idempotent ingestion endpoint; already-indexed PDF content is reused instead of embedded again.
+The frontend stores only the last active `chatId` as a convenience. Chats, attachments, messages, citations, and usage are restored from PostgreSQL after refreshes or backend restarts. Uploading inside a chat uses one endpoint that performs idempotent ingestion and then attaches the resulting document, so an already-indexed PDF reuses its vectors.
 
 ### Frontend flow
 
 ```text
-Upload PDF ────────────────> POST /api/documents/ingest
+Create/load chats ─────────> GET/POST /api/chats
 Load indexed documents ───> GET  /api/documents
-Select 1-3 documents
-Ask/follow up ─────────────> POST /api/rag/chat/stream
+Attach 1-3 documents ──────> POST /api/chats/{chatId}/documents
+Upload into a chat ────────> POST /api/chats/{chatId}/documents/upload
+Ask/follow up ─────────────> POST /api/chats/{chatId}/messages/stream
                               ↓
                progress → sources → answer fragments → result
 ```
 
-The interface is intentionally light and minimal. It shows indexed chunk counts, enforces the three-document limit, displays active context, renders grounded answers progressively as safe GitHub-Flavored Markdown, and surfaces token usage for each successful answer. Citations such as `Source 1` are interactive: selecting one reveals, expands, highlights, and scrolls to its exact retrieved chunk. The two highest-ranked sources are shown initially; any additional matches are available through **Show more sources**, and every source can still be expanded to inspect its complete retrieved chunk and page metadata.
+The interface is intentionally light and minimal. It shows indexed chunk counts, enforces the three-document limit, displays active context, renders grounded answers progressively as safe GitHub-Flavored Markdown, and surfaces token usage for each successful answer. Citations such as `Source 1` are interactive: selecting one opens its exact retrieved passage in the evidence panel. The two highest-ranked sources are shown initially; any additional matches are available through **Show more sources**, and every source can still be expanded to inspect its complete retrieved chunk and page metadata.
+
+The application uses a focused, viewport-fixed workspace. The document library
+and navigation rail remain in place while the conversation scrolls independently.
+The library sidebar can be minimized or expanded, and that preference is retained
+in browser storage. Selecting an answer citation also opens a dedicated evidence
+panel containing the source file, page, section, retrieved passage, and relevance.
 
 ## Book-scoped chat memory
 
@@ -528,4 +553,4 @@ Spring Boot detects the Google GenAI starters and creates both `GoogleGenAiChatM
 
 ## Next learning step
 
-Evaluate retrieval and grounded-answer quality across varied PDFs, then persist conversations in PostgreSQL so users can return to a chat after an application restart.
+Add chat rename/delete controls and evaluate retrieval and grounded-answer quality across varied PDFs with a repeatable RAG evaluation set.

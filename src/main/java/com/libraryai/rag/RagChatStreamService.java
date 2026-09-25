@@ -1,6 +1,7 @@
 package com.libraryai.rag;
 
 import java.io.IOException;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -24,16 +25,17 @@ public class RagChatStreamService {
         this.taskExecutor = taskExecutor;
     }
 
-    public SseEmitter stream(RagChatRequest request) {
+    public SseEmitter stream(UUID chatId, ChatMessageRequest request) {
         SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
-        this.taskExecutor.execute(() -> runStream(request, emitter));
+        this.taskExecutor.execute(() -> runStream(chatId, request, emitter));
         return emitter;
     }
 
-    private void runStream(RagChatRequest request, SseEmitter emitter) {
+    private void runStream(UUID chatId, ChatMessageRequest request, SseEmitter emitter) {
         AtomicReference<RagChatProgressStage> currentStage = new AtomicReference<>();
         try {
             RagChatResponse response = this.ragChatService.streamChat(
+                    chatId,
                     request,
                     stage -> {
                         currentStage.set(stage);

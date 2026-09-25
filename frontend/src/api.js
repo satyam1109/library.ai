@@ -30,12 +30,47 @@ export async function uploadDocument(file) {
   );
 }
 
-export async function sendRagMessage(payload) {
+export async function getChats() {
+  return parseResponse(await fetch("/api/chats"));
+}
+
+export async function createChat(title) {
   return parseResponse(
-    await fetch("/api/rag/chat", {
+    await fetch("/api/chats", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ title }),
+    }),
+  );
+}
+
+export async function getChat(chatId) {
+  return parseResponse(await fetch(`/api/chats/${chatId}`));
+}
+
+export async function attachChatDocuments(chatId, documentIds) {
+  return parseResponse(
+    await fetch(`/api/chats/${chatId}/documents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ documentIds }),
+    }),
+  );
+}
+
+export async function detachChatDocument(chatId, documentId) {
+  return parseResponse(
+    await fetch(`/api/chats/${chatId}/documents/${documentId}`, { method: "DELETE" }),
+  );
+}
+
+export async function uploadChatDocument(chatId, file) {
+  const body = new FormData();
+  body.append("file", file);
+  return parseResponse(
+    await fetch(`/api/chats/${chatId}/documents/upload`, {
+      method: "POST",
+      body,
     }),
   );
 }
@@ -55,8 +90,8 @@ function decodeServerEvent(block) {
  * Uses fetch instead of EventSource because this stream begins with a POST body.
  * The response still follows the standard text/event-stream wire format.
  */
-export async function streamRagMessage(payload, handlers = {}) {
-  const response = await fetch("/api/rag/chat/stream", {
+export async function streamChatMessage(chatId, payload, handlers = {}) {
+  const response = await fetch(`/api/chats/${chatId}/messages/stream`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

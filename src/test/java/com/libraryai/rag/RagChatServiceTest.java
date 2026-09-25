@@ -7,10 +7,7 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatModel;
@@ -23,32 +20,34 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class RagChatServiceTest {
 
-    private static final String CONVERSATION_ID = "923e4567-e89b-12d3-a456-426614174000";
+    private static final UUID CHAT_ID = UUID.fromString("923e4567-e89b-12d3-a456-426614174000");
     private static final String FIRST_DOCUMENT_ID = "123e4567-e89b-12d3-a456-426614174000";
     private static final String SECOND_DOCUMENT_ID = "223e4567-e89b-12d3-a456-426614174000";
 
     private final SimilarityRetrievalService retrievalService = mock(SimilarityRetrievalService.class);
-    private final DocumentCatalogRepository documentCatalog = mock(DocumentCatalogRepository.class);
+    private final LibraryChatRepository chatRepository = mock(LibraryChatRepository.class);
     private final ChatModel chatModel = mock(ChatModel.class);
-    private final ChatMemory chatMemory = mock(ChatMemory.class);
     private final RagChatService service = new RagChatService(
-            retrievalService, documentCatalog, chatModel, chatMemory
+            retrievalService, chatRepository, chatModel
     );
 
     @Test
     void retrievesAcrossSelectedDocumentsAndRetainsIsolatedConversationHistory() {
-        when(documentCatalog.isReady(any(UUID.class))).thenReturn(true);
-        when(chatMemory.get(anyString())).thenReturn(List.of(
-                UserMessage.builder().text("Compare the policies").build(),
-                AssistantMessage.builder().content("What aspect should I compare?").build()
+        when(chatRepository.findContext(CHAT_ID)).thenReturn(new LibraryChatContext(
+                CHAT_ID.toString(), "Policy chat", 2,
+                List.of(FIRST_DOCUMENT_ID, SECOND_DOCUMENT_ID)
+        ));
+        when(chatRepository.findPromptHistory(CHAT_ID, 2, 20)).thenReturn(List.of(
+                new StoredChatMessage("USER", "Compare the policies"),
+                new StoredChatMessage("ASSISTANT", "What aspect should I compare?")
         ));
         SimilaritySearchResult firstSource = source(1, FIRST_DOCUMENT_ID, "first.pdf");
         SimilaritySearchResult secondSource = source(2, SECOND_DOCUMENT_ID, "second.pdf");
@@ -69,12 +68,11 @@ class RagChatServiceTest {
         when(chatModel.call(any(Prompt.class))).thenReturn(modelResponse);
 
         List<RagChatProgressStage> stages = new ArrayList<>();
-        RagChatResponse response = service.chat(new RagChatRequest(
-                CONVERSATION_ID,
-                List.of(FIRST_DOCUMENT_ID, SECOND_DOCUMENT_ID),
-                "What about leave?",
-                5
-        ), stages::add);
+        RagChatResponse response = service.chat(
+                CHAT_ID,
+                new ChatMessageRequest("What about leave?", 5),
+                stages::add
+        );
 
         assertThat(response.documentIds()).containsExactly(FIRST_DOCUMENT_ID, SECOND_DOCUMENT_ID);
         assertThat(response.sources()).containsExactly(firstSource, secondSource);
@@ -103,23 +101,23 @@ class RagChatServiceTest {
                 .contains("What about leave?")
                 .contains("moderately detailed teaching answer")
                 .contains("GitHub-Flavored Markdown");
-        verify(chatMemory, times(2)).add(anyString(), any(Message.class));
+        verify(chatRepository).saveTurn(
+                eq(CHAT_ID), eq(2), eq("What about leave?"),
+                eq("The documents differ. [Source 1] [Source 2]"),
+                eq(List.of(firstSource, secondSource)), eq(100), eq(25), eq(125)
+        );
     }
 
     @Test
-    void rejectsMoreThanThreeDocumentsBeforeRetrieval() {
-        assertThatThrownBy(() -> service.chat(new RagChatRequest(
-                CONVERSATION_ID,
-                List.of(
-                        FIRST_DOCUMENT_ID,
-                        SECOND_DOCUMENT_ID,
-                        "323e4567-e89b-12d3-a456-426614174000",
-                        "423e4567-e89b-12d3-a456-426614174000"
-                ),
-                "question",
-                5
-        ))).isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("at most 3");
+    void rejectsAChatWithoutAttachedDocumentsBeforeRetrieval() {
+        when(chatRepository.findContext(CHAT_ID)).thenReturn(new LibraryChatContext(
+                CHAT_ID.toString(), "Empty chat", 1, List.of()
+        ));
+
+        assertThatThrownBy(() -> service.chat(
+                CHAT_ID, new ChatMessageRequest("question", 5)
+        )).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Attach at least one document");
 
         verify(retrievalService, never()).searchAcrossDocuments(anyString(), any(), any());
         verify(chatModel, never()).call(any(Prompt.class));
@@ -127,8 +125,10 @@ class RagChatServiceTest {
 
     @Test
     void streamsSourcesAndAnswerFragmentsWhileRetainingTheCompletedAnswer() {
-        when(documentCatalog.isReady(any(UUID.class))).thenReturn(true);
-        when(chatMemory.get(anyString())).thenReturn(List.of());
+        when(chatRepository.findContext(CHAT_ID)).thenReturn(new LibraryChatContext(
+                CHAT_ID.toString(), "DI chat", 1, List.of(FIRST_DOCUMENT_ID)
+        ));
+        when(chatRepository.findPromptHistory(CHAT_ID, 1, 20)).thenReturn(List.of());
         SimilaritySearchResult source = source(1, FIRST_DOCUMENT_ID, "first.pdf");
         when(retrievalService.searchAcrossDocuments(anyString(), any(), any()))
                 .thenAnswer(invocation -> {
@@ -146,9 +146,8 @@ class RagChatServiceTest {
         List<SimilaritySearchResult> streamedSources = new ArrayList<>();
         List<String> streamedTokens = new ArrayList<>();
         RagChatResponse response = service.streamChat(
-                new RagChatRequest(
-                        CONVERSATION_ID, List.of(FIRST_DOCUMENT_ID), "What is DI?", 5
-                ),
+                CHAT_ID,
+                new ChatMessageRequest("What is DI?", 5),
                 RagChatProgressListener.NONE,
                 streamedSources::addAll,
                 streamedTokens::add
@@ -160,7 +159,11 @@ class RagChatServiceTest {
         );
         assertThat(response.answer())
                 .isEqualTo("Dependency injection supplies dependencies. [Source 1]");
-        verify(chatMemory, times(2)).add(anyString(), any(Message.class));
+        verify(chatRepository).saveTurn(
+                eq(CHAT_ID), eq(1), eq("What is DI?"),
+                eq("Dependency injection supplies dependencies. [Source 1]"),
+                eq(List.of(source)), eq(100), eq(25), eq(125)
+        );
     }
 
     private SimilaritySearchResult source(int rank, String documentId, String fileName) {
