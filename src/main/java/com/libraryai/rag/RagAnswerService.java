@@ -28,12 +28,12 @@ public class RagAnswerService {
                     """)
             .build();
 
-    private final SimilarityRetrievalService retrievalService;
+    private final HybridRetrievalService retrievalService;
     private final DocumentCatalogRepository documentCatalog;
     private final ChatModel chatModel;
 
     public RagAnswerService(
-            SimilarityRetrievalService retrievalService,
+            HybridRetrievalService retrievalService,
             DocumentCatalogRepository documentCatalog,
             ChatModel chatModel) {
         this.retrievalService = retrievalService;
@@ -44,10 +44,9 @@ public class RagAnswerService {
     public RagAnswerResponse answer(RagAnswerRequest request) {
         UUID documentId = requireReadyDocument(request.documentId());
 
-        SimilaritySearchResponse retrieval = this.retrievalService.search(
-                new SimilaritySearchRequest(
-                        request.question(), request.topK(), documentId.toString()
-                )
+        MultiDocumentSimilaritySearchResponse retrieval =
+                this.retrievalService.searchAcrossDocuments(
+                        request.question(), List.of(documentId.toString()), request.topK()
         );
         if (retrieval.results().isEmpty()) {
             throw new IllegalArgumentException("No indexed chunks were found for documentId");

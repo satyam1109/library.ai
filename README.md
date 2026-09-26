@@ -1,6 +1,6 @@
 # Library AI
 
-Library AI is a learning-first project for building an AI-powered book learning assistant with Spring Boot, Spring AI, Gemini, React, PostgreSQL, and pgvector.
+Library AI is a learning-first project for building an AI-powered book learning assistant with Spring Boot, Spring AI, Gemini, React, PostgreSQL, pgvector, and Elasticsearch.
 
 The project is intentionally built in small stages so that each AI concept is understood before higher-level abstractions are introduced.
 
@@ -32,6 +32,7 @@ The project is intentionally built in small stages so that each AI concept is un
 - [x] Persist RAG messages, token usage, and cited evidence in PostgreSQL.
 - [x] Restrict every chat retrieval to its server-owned attached documents.
 - [x] Add a responsive, light React UI connected to upload, catalog, and chat APIs.
+- [x] Add Elasticsearch BM25 retrieval and application-level RRF hybrid ranking.
 
 ## Current architecture
 
@@ -61,12 +62,15 @@ PDF upload
     -> create/reuse parent documentId in library_documents
     -> Gemini RETRIEVAL_DOCUMENT embeddings
     -> PostgreSQL library_chunks (documentId + text + metadata + vector)
+    -> Elasticsearch lexical index (same stable chunkId + text + metadata)
 
 Question + chatId
     -> load the chat's 1-3 attached documentIds from PostgreSQL
-    -> Gemini RETRIEVAL_QUERY embedding
-    -> one globally ranked pgvector search filtered to the selected documentIds
-    -> top matching original chunks + metadata + relevance score
+    -> pgvector semantic candidates using a Gemini RETRIEVAL_QUERY embedding
+    -> Elasticsearch BM25 keyword candidates using the original question
+    -> application-level reciprocal rank fusion (RRF)
+    -> exact-ID deduplication + conservative overlap reduction
+    -> final matching original chunks + metadata + hybrid relevance score
     -> grounded prompt containing numbered sources
     -> Gemini chat model
     -> answer + source chunks + token usage
@@ -84,6 +88,7 @@ A chat owns at least one and at most three document attachments. The client send
 | Gemini chat model | `gemini-3.5-flash-lite` | Existing text-generation model |
 | Gemini embedding model | `gemini-embedding-001` | One embedding space for both documents and questions |
 | PostgreSQL image | `pgvector/pgvector:pg17` | Local PostgreSQL 17 image with pgvector included |
+| Elasticsearch image | `9.5.4` | Secondary local BM25 index for hybrid retrieval |
 
 The Spring AI BOM manages compatible versions of all Spring AI modules. The embedding and pgvector starters deliberately have no separate version so they stay on Spring AI `2.0.1`.
 
@@ -154,7 +159,22 @@ Documents use `RETRIEVAL_DOCUMENT`; questions use `RETRIEVAL_QUERY`. A small `Em
 
 Database values can be overridden without changing source code through `LIBRARY_AI_DB_URL`, `LIBRARY_AI_DB_USERNAME`, and `LIBRARY_AI_DB_PASSWORD`.
 
-## Start PostgreSQL and the application
+Hybrid-search settings are application owned:
+
+```properties
+library.ai.elasticsearch.enabled=true
+library.ai.elasticsearch.base-url=http://localhost:9200
+library.ai.elasticsearch.index-name=library-ai-chunks-v2
+library.ai.elasticsearch.candidate-count=20
+library.ai.elasticsearch.rrf-rank-constant=60
+library.ai.elasticsearch.redundancy-overlap-threshold=0.60
+```
+
+Set `LIBRARY_AI_ELASTICSEARCH_URL` to override the Elasticsearch URL. If
+Elasticsearch is temporarily unavailable, document ingestion remains valid in
+PostgreSQL and chat retrieval automatically falls back to vector-only results.
+
+## Start PostgreSQL, Elasticsearch, and the application
 
 Start the persistent local database:
 
@@ -163,7 +183,9 @@ docker compose up -d
 docker compose ps
 ```
 
-The compose file maps host port `5433` to PostgreSQL's container port `5432`, creates the `library_ai` database, and persists data in the `library_ai_pgdata` named volume. Its initialization script enables `vector`, `hstore`, and `uuid-ossp`.
+The compose file maps host port `5433` to PostgreSQL and `9200` to Elasticsearch.
+Both services use named volumes. PostgreSQL remains the source of truth;
+Elasticsearch can be rebuilt from stored pgvector chunks when required.
 
 Then start Spring Boot:
 
@@ -177,7 +199,7 @@ Stop the services with:
 docker compose down
 ```
 
-`docker compose down` preserves the named database volume. Add `--volumes` only when you intentionally want to delete all locally indexed chunks.
+`docker compose down` preserves both named volumes. Add `--volumes` only when you intentionally want to delete all locally indexed chunks.
 
 ## Run the application
 
@@ -386,6 +408,22 @@ The response contains ranked original chunk text, all metadata, and a cosine rel
 
 Live verification with the 50-page Java test PDF stored all 52 vectors under one document ID. The top result for `How does HashMap work?` was section `18. HashMap Internals` on page 18 with relevance score `0.7225`.
 
+Inspect the final hybrid results that would be supplied to Gemini:
+
+```bash
+curl -X POST http://localhost:8090/api/retrieval/hybrid \
+  -H 'Content-Type: application/json' \
+  -d '{"documentId":"<uuid-from-ingestion>","question":"How does HashMap work?","topK":5}'
+```
+
+Hybrid retrieval asks pgvector and Elasticsearch for up to 20 candidates each.
+Spring Boot then performs RRF using stable `chunk_id` values, removes exact
+duplicates, and suppresses adjacent same-document chunks only when their
+five-word-shingle overlap is at least 60%. The result metadata includes
+`retrieval_mode`, `rrf_score`, `vector_rank`, `vector_score`, `keyword_rank`,
+and `keyword_score`, making the decision inspectable. Existing documents are
+lazily backfilled from PostgreSQL the first time they are searched.
+
 ### Generate a grounded RAG answer
 
 ```bash
@@ -401,11 +439,12 @@ curl -X POST http://localhost:8090/api/rag/answer \
 The operation is deliberately ordered:
 
 1. Verify the selected document exists and has status `READY`.
-2. Embed the question with `RETRIEVAL_QUERY`.
-3. Search only chunks whose metadata contains the selected `document_id`.
-4. Build a grounded prompt with numbered source text, section titles, and pages.
-5. Ask the existing Gemini chat model to answer only from that evidence.
-6. Return the answer, retrieved chunks, relevance scores, metadata, and token usage.
+2. Embed the question with `RETRIEVAL_QUERY` and run document-filtered pgvector search.
+3. Run a document-filtered Elasticsearch BM25 search on the original question.
+4. Fuse both rankings, deduplicate, and select the least-redundant top chunks.
+5. Build a grounded prompt with numbered source text, section titles, and pages.
+6. Ask the existing Gemini chat model to answer only from that evidence.
+7. Return the answer, retrieved chunks, relevance scores, metadata, and token usage.
 
 This endpoint is currently stateless. It does not mix the basic `/api/ai/chat` memory into RAG, which avoids leaking conversation context between documents. An unknown, malformed, or not-yet-ready `documentId` is rejected before an embedding or chat call is made.
 

@@ -30,18 +30,21 @@ public class PdfIngestionService {
     private final JdbcTemplate jdbcTemplate;
     private final RetrievalProperties properties;
     private final DocumentCatalogRepository documentCatalog;
+    private final ElasticsearchChunkIndexService elasticsearchIndex;
 
     public PdfIngestionService(
             PdfChunkService pdfChunkService,
             VectorStore vectorStore,
             JdbcTemplate jdbcTemplate,
             RetrievalProperties properties,
-            DocumentCatalogRepository documentCatalog) {
+            DocumentCatalogRepository documentCatalog,
+            ElasticsearchChunkIndexService elasticsearchIndex) {
         this.pdfChunkService = pdfChunkService;
         this.vectorStore = vectorStore;
         this.jdbcTemplate = jdbcTemplate;
         this.properties = properties;
         this.documentCatalog = documentCatalog;
+        this.elasticsearchIndex = elasticsearchIndex;
     }
 
     public synchronized PdfIngestionResponse ingest(String fileName, byte[] pdfBytes) {
@@ -67,19 +70,23 @@ public class PdfIngestionService {
             PdfChunkResult chunkResult = this.pdfChunkService.chunkPdf(namedResource(fileName, pdfBytes));
             String ingestionFingerprint = ingestionFingerprint(documentFingerprint, chunkResult.chunks());
             int expectedChunks = chunkResult.chunks().size();
+            List<Document> indexedDocuments = addStableIdentity(
+                    chunkResult.chunks(), documentId, documentFingerprint, ingestionFingerprint
+            );
 
             int existingChunks = countByIngestionFingerprint(documentId, ingestionFingerprint);
             if (existingChunks == expectedChunks) {
+                // This also repairs/backfills the secondary lexical index without
+                // creating Gemini embeddings again.
+                this.elasticsearchIndex.replaceDocumentSafely(
+                        documentId.toString(), indexedDocuments
+                );
                 this.documentCatalog.markReady(documentId, existingChunks);
                 return response(
                         documentId, fileName, documentFingerprint, chunkResult,
                         existingChunks, 0, true
                 );
             }
-
-            List<Document> indexedDocuments = addStableIdentity(
-                    chunkResult.chunks(), documentId, documentFingerprint, ingestionFingerprint
-            );
 
             progressListener.onProgress(new PdfIngestionProgressEvent(
                     PdfIngestionStage.INDEXING,
@@ -108,6 +115,9 @@ public class PdfIngestionService {
             // Replace older chunking results for this document only after the new
             // vectors have been embedded and stored successfully.
             deleteOlderIngestions(documentId, ingestionFingerprint);
+            this.elasticsearchIndex.replaceDocumentSafely(
+                    documentId.toString(), indexedDocuments
+            );
             int storedChunks = countByIngestionFingerprint(documentId, ingestionFingerprint);
             this.documentCatalog.markReady(documentId, storedChunks);
             return response(

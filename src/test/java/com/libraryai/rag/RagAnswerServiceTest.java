@@ -26,7 +26,7 @@ class RagAnswerServiceTest {
 
     private static final String DOCUMENT_ID = "123e4567-e89b-12d3-a456-426614174000";
 
-    private final SimilarityRetrievalService retrievalService = mock(SimilarityRetrievalService.class);
+    private final HybridRetrievalService retrievalService = mock(HybridRetrievalService.class);
     private final DocumentCatalogRepository documentCatalog = mock(DocumentCatalogRepository.class);
     private final ChatModel chatModel = mock(ChatModel.class);
     private final RagAnswerService service = new RagAnswerService(
@@ -47,9 +47,9 @@ class RagAnswerServiceTest {
                 )
         );
         when(documentCatalog.isReady(documentId)).thenReturn(true);
-        when(retrievalService.search(any())).thenReturn(
-                new SimilaritySearchResponse(
-                        "How does HashMap work?", DOCUMENT_ID, 3, 1, List.of(source)
+        when(retrievalService.searchAcrossDocuments(any(), any(), any())).thenReturn(
+                new MultiDocumentSimilaritySearchResponse(
+                        "How does HashMap work?", List.of(DOCUMENT_ID), 3, 1, List.of(source)
                 )
         );
 
@@ -82,7 +82,7 @@ class RagAnswerServiceTest {
         )).isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("not found or is not ready");
 
-        verify(retrievalService, never()).search(any());
+        verify(retrievalService, never()).searchAcrossDocuments(any(), any(), any());
         verify(chatModel, never()).call(any(Prompt.class));
     }
 

@@ -1,6 +1,7 @@
 package com.libraryai.rag;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.UUID;
 
@@ -41,7 +42,7 @@ public class SimilarityRetrievalService {
                     index + 1,
                     match.getScore() == null ? 0.0 : match.getScore(),
                     match.getText(),
-                    match.getMetadata()
+                    metadataWithChunkId(match)
             ));
         }
 
@@ -136,9 +137,15 @@ public class SimilarityRetrievalService {
                     index + 1,
                     match.getScore() == null ? 0.0 : match.getScore(),
                     match.getText(),
-                    match.getMetadata()
+                    metadataWithChunkId(match)
             ));
         }
         return List.copyOf(results);
+    }
+
+    private java.util.Map<String, Object> metadataWithChunkId(Document document) {
+        LinkedHashMap<String, Object> metadata = new LinkedHashMap<>(document.getMetadata());
+        metadata.put("chunk_id", document.getId());
+        return java.util.Map.copyOf(metadata);
     }
 }

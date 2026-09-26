@@ -32,7 +32,7 @@ class RagChatServiceTest {
     private static final String FIRST_DOCUMENT_ID = "123e4567-e89b-12d3-a456-426614174000";
     private static final String SECOND_DOCUMENT_ID = "223e4567-e89b-12d3-a456-426614174000";
 
-    private final SimilarityRetrievalService retrievalService = mock(SimilarityRetrievalService.class);
+    private final HybridRetrievalService retrievalService = mock(HybridRetrievalService.class);
     private final LibraryChatRepository chatRepository = mock(LibraryChatRepository.class);
     private final ConversationMemoryService conversationMemoryService =
             mock(ConversationMemoryService.class);
@@ -55,7 +55,7 @@ class RagChatServiceTest {
         );
         SimilaritySearchResult firstSource = source(1, FIRST_DOCUMENT_ID, "first.pdf");
         SimilaritySearchResult secondSource = source(2, SECOND_DOCUMENT_ID, "second.pdf");
-        when(retrievalService.searchAcrossDocuments(anyString(), any(), any()))
+        when(retrievalService.searchAcrossDocuments(anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> {
                     QueryEmbeddingProgressContext.embeddingReady();
                     return new MultiDocumentSimilaritySearchResponse(
@@ -90,6 +90,7 @@ class RagChatServiceTest {
         ArgumentCaptor<String> retrievalQuery = ArgumentCaptor.forClass(String.class);
         verify(retrievalService).searchAcrossDocuments(
                 retrievalQuery.capture(),
+                eq("What about leave?"),
                 org.mockito.ArgumentMatchers.eq(List.of(FIRST_DOCUMENT_ID, SECOND_DOCUMENT_ID)),
                 org.mockito.ArgumentMatchers.eq(5)
         );
@@ -123,7 +124,9 @@ class RagChatServiceTest {
         )).isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Attach at least one document");
 
-        verify(retrievalService, never()).searchAcrossDocuments(anyString(), any(), any());
+        verify(retrievalService, never()).searchAcrossDocuments(
+                anyString(), anyString(), any(), any()
+        );
         verify(chatModel, never()).call(any(Prompt.class));
     }
 
@@ -136,7 +139,7 @@ class RagChatServiceTest {
                 new PreparedConversationMemory(null, List.of(), null, null, null)
         );
         SimilaritySearchResult source = source(1, FIRST_DOCUMENT_ID, "first.pdf");
-        when(retrievalService.searchAcrossDocuments(anyString(), any(), any()))
+        when(retrievalService.searchAcrossDocuments(anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> {
                     QueryEmbeddingProgressContext.embeddingReady();
                     return new MultiDocumentSimilaritySearchResponse(
@@ -187,7 +190,7 @@ class RagChatServiceTest {
                 )
         );
         SimilaritySearchResult source = source(1, FIRST_DOCUMENT_ID, "first.pdf");
-        when(retrievalService.searchAcrossDocuments(anyString(), any(), any()))
+        when(retrievalService.searchAcrossDocuments(anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> {
                     QueryEmbeddingProgressContext.embeddingReady();
                     return new MultiDocumentSimilaritySearchResponse(

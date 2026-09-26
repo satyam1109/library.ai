@@ -48,13 +48,13 @@ public class RagChatService {
                     """)
             .build();
 
-    private final SimilarityRetrievalService retrievalService;
+    private final HybridRetrievalService retrievalService;
     private final LibraryChatRepository chatRepository;
     private final ConversationMemoryService conversationMemoryService;
     private final ChatModel chatModel;
 
     public RagChatService(
-            SimilarityRetrievalService retrievalService,
+            HybridRetrievalService retrievalService,
             LibraryChatRepository chatRepository,
             ConversationMemoryService conversationMemoryService,
             ChatModel chatModel) {
@@ -126,7 +126,7 @@ public class RagChatService {
                 QueryEmbeddingProgressContext.withListener(
                         () -> progressListener.onStage(RagChatProgressStage.SEARCHING),
                         () -> this.retrievalService.searchAcrossDocuments(
-                                retrievalQuery, documentIds, request.topK()
+                                retrievalQuery, message, documentIds, request.topK()
                         )
                 );
         if (retrieval.results().isEmpty()) {

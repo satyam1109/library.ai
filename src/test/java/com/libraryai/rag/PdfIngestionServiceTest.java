@@ -29,13 +29,16 @@ class PdfIngestionServiceTest {
     private final VectorStore vectorStore = mock(VectorStore.class);
     private final JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
     private final DocumentCatalogRepository documentCatalog = mock(DocumentCatalogRepository.class);
+    private final ElasticsearchChunkIndexService elasticsearchIndex =
+            mock(ElasticsearchChunkIndexService.class);
     private final UUID documentId = UUID.fromString("123e4567-e89b-12d3-a456-426614174000");
     private final PdfIngestionService service = new PdfIngestionService(
             chunkService,
             vectorStore,
             jdbcTemplate,
             new RetrievalProperties("gemini-embedding-001", 768, 5, 20, "public", "library_chunks"),
-            documentCatalog
+            documentCatalog,
+            elasticsearchIndex
     );
 
     @Test
@@ -53,6 +56,7 @@ class PdfIngestionServiceTest {
         assertThat(response.storedChunkCount()).isEqualTo(2);
         assertThat(response.geminiEmbeddingTokens()).isZero();
         verify(vectorStore, never()).add(any());
+        verify(elasticsearchIndex).replaceDocumentSafely(eq(documentId.toString()), any());
         verify(documentCatalog).markReady(documentId, 2);
     }
 
@@ -70,6 +74,9 @@ class PdfIngestionServiceTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Document>> documents = ArgumentCaptor.forClass(List.class);
         verify(vectorStore).add(documents.capture());
+        verify(elasticsearchIndex).replaceDocumentSafely(
+                documentId.toString(), documents.getValue()
+        );
         verify(jdbcTemplate).update(anyString(), anyString(), anyString());
 
         assertThat(response.skippedAsDuplicate()).isFalse();
