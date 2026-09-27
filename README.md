@@ -255,6 +255,17 @@ hosted service. The backend continues to use pgvector semantic retrieval. It can
 be enabled after an authenticated hosted Elasticsearch endpoint is configured.
 Do not create a `PORT` variable manually; Render injects it at runtime.
 
+## Deploy the frontend to Vercel
+
+Create a Vercel project from the same GitHub repository and set its **Root
+Directory** to `frontend`. Vercel detects the Vite application, runs
+`npm run build`, and publishes `dist`.
+
+The frontend's `vercel.json` keeps browser API requests same-origin and rewrites
+`/api/*` to the Render backend. A second rewrite serves `index.html` for Vite SPA
+routes. This means no Gemini key, database credential, or backend URL needs to be
+stored in browser code or added as a Vercel environment variable.
+
 ## API endpoints
 
 ### Welcome
