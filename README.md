@@ -225,6 +225,36 @@ VITE_BACKEND_TARGET=http://localhost:8091 npm run dev
 
 Create a production frontend bundle with `npm run build`. The generated files are written to `frontend/dist` and are intentionally not committed.
 
+## Deploy the backend to Render
+
+The repository includes a multi-stage `Dockerfile` for Render. It builds the
+Spring Boot executable with Java 21 and runs it in a smaller Java 21 runtime
+image. Render supplies `PORT`; local development continues to use port `8090`.
+
+Create a Render **Web Service** from this GitHub repository with:
+
+- Runtime: `Docker`
+- Branch: `main`
+- Region: `Singapore` (the same region as the Neon project)
+- Dockerfile path: `./Dockerfile`
+- Health check path: `/api/welcome`
+
+Add these environment variables in Render. Enter real secrets only in Render,
+never in Git or this README:
+
+```text
+LIBRARY_AI_DB_URL=jdbc:postgresql://<neon-host>/<database>?sslmode=require&channelBinding=require
+LIBRARY_AI_DB_USERNAME=<neon-role>
+LIBRARY_AI_DB_PASSWORD=<rotated-neon-password>
+SPRING_AI_GOOGLE_GENAI_API_KEY=<gemini-api-key>
+LIBRARY_AI_ELASTICSEARCH_ENABLED=false
+```
+
+Elasticsearch is disabled for the initial deployment because it is a separate
+hosted service. The backend continues to use pgvector semantic retrieval. It can
+be enabled after an authenticated hosted Elasticsearch endpoint is configured.
+Do not create a `PORT` variable manually; Render injects it at runtime.
+
 ## API endpoints
 
 ### Welcome

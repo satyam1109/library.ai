@@ -1,0 +1,10 @@
+.git
+.github
+.idea
+.vscode
+target
+frontend
+docs
+*.log
+.DS_Store
+application-secret.properties

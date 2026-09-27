@@ -42,6 +42,7 @@ body { min-width: 320px; background: #f7f8f6; }
 .workspace-title span { color: var(--muted); font-size: 9px; }
 .new-chat-button { border: 1px solid var(--line-strong); background: #fff; border-radius: 10px; padding: 9px 13px; display: flex; gap: 7px; align-items: center; font-weight: 600; font-size: 13px; cursor: pointer; }
 .new-chat-button:hover { border-color: #aeb9b1; background: var(--soft); }
+.new-chat-button:disabled { opacity: .55; cursor: default; }
 
 .workspace { position: relative; flex: 1; min-height: 0; overflow: clip; display: grid; grid-template-columns: 56px 300px minmax(0, 1fr); transition: grid-template-columns .2s ease; }
 .workspace.evidence-open { grid-template-columns: 56px 300px minmax(0, 1fr) 310px; }
@@ -63,15 +64,39 @@ h1, h2, p { margin-top: 0; }
 .selection-count { border: 1px solid var(--line); background: var(--soft); border-radius: 99px; padding: 5px 9px; color: var(--muted); font-size: 11px; font-weight: 700; }
 .sidebar-description { color: var(--muted); line-height: 1.5; font-size: 13px; margin: 12px 0 19px; }
 .chat-list { max-height: 176px; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; padding-right: 2px; overscroll-behavior: contain; }
-.chat-list-item { width: 100%; min-width: 0; border: 1px solid transparent; border-radius: 11px; background: transparent; padding: 9px; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 8px; align-items: center; text-align: left; cursor: pointer; }
+.chat-list-item { width: 100%; min-width: 0; border: 1px solid transparent; border-radius: 11px; background: transparent; padding: 3px; display: grid; grid-template-columns: minmax(0, 1fr) 30px; gap: 2px; align-items: center; }
 .chat-list-item:hover { background: var(--soft); }
 .chat-list-item.selected { border-color: #cadfd1; background: var(--green-soft); }
-.chat-list-item:disabled { cursor: default; }
+.chat-list-open { min-width: 0; border: 0; background: transparent; padding: 6px; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 8px; align-items: center; text-align: left; cursor: pointer; }
+.chat-list-open:disabled, .chat-delete-button:disabled { cursor: default; }
 .chat-list-icon { width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 9px; background: #fff; color: var(--green); display: grid; place-items: center; }
 .chat-list-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .chat-list-copy strong, .chat-list-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-list-copy strong { font-size: 11px; font-weight: 700; }
 .chat-list-copy small { color: var(--muted); font-size: 9px; }
+.chat-delete-button { width: 28px; height: 28px; border: 0; border-radius: 8px; background: transparent; color: #9a6c68; display: grid; place-items: center; cursor: pointer; opacity: .45; transition: color .15s ease, background .15s ease, opacity .15s ease; }
+.chat-list-item:hover .chat-delete-button, .chat-delete-button:focus-visible, .chat-list-item.selected .chat-delete-button { opacity: 1; }
+.chat-delete-button:hover:not(:disabled) { color: #a53f36; background: #f8e9e7; }
+.chat-delete-button:focus-visible { outline: 2px solid #d8a39e; outline-offset: 1px; }
+.dialog-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(23, 33, 27, .38); backdrop-filter: blur(3px); animation: dialog-fade-in .16s ease-out; }
+.confirm-dialog { width: min(440px, 100%); overflow: hidden; border: 1px solid #dce3dd; border-radius: 18px; background: #fff; box-shadow: 0 24px 70px rgba(23, 33, 27, .22); animation: dialog-rise-in .18s ease-out; }
+.confirm-dialog-heading { display: flex; align-items: center; gap: 13px; padding: 22px 22px 17px; }
+.confirm-dialog-icon { width: 42px; height: 42px; flex: 0 0 auto; border: 1px solid #efd5d1; border-radius: 12px; background: #fff4f2; color: #a43c32; display: grid; place-items: center; }
+.confirm-dialog-heading h2 { margin: 3px 0 0; font-family: "Newsreader", Georgia, serif; font-size: 25px; font-weight: 600; letter-spacing: -.02em; }
+.confirm-dialog-body { padding: 0 22px 21px; }
+.confirm-dialog-body > p { margin: 0; color: #4e5851; font-size: 13px; line-height: 1.65; }
+.confirm-dialog-body > p strong { color: var(--ink); }
+.confirm-dialog-note { margin-top: 15px; border: 1px solid #dce8df; border-radius: 11px; background: var(--green-soft); padding: 11px 12px; display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; align-items: start; color: #3c624b; font-size: 11px; line-height: 1.5; }
+.confirm-dialog-note svg { margin-top: 1px; }
+.confirm-dialog-actions { border-top: 1px solid var(--line); background: #fafbfa; padding: 14px 18px; display: flex; justify-content: flex-end; gap: 9px; }
+.confirm-dialog-actions button { min-height: 38px; border-radius: 10px; padding: 0 15px; font-size: 12px; font-weight: 700; cursor: pointer; }
+.dialog-cancel-button { border: 1px solid var(--line-strong); background: #fff; color: #4d5750; }
+.dialog-cancel-button:hover:not(:disabled) { border-color: #afb9b1; background: var(--soft); }
+.dialog-delete-button { border: 1px solid #a43c32; background: #a43c32; color: #fff; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.dialog-delete-button:hover:not(:disabled) { border-color: #8f3028; background: #8f3028; }
+.confirm-dialog-actions button:disabled { opacity: .58; cursor: wait; }
+@keyframes dialog-fade-in { from { opacity: 0; } }
+@keyframes dialog-rise-in { from { opacity: 0; transform: translateY(8px) scale(.985); } }
 .context-heading { margin-top: 18px !important; margin-bottom: 9px !important; }
 .indexed-heading { margin-top: 17px !important; }
 .upload-button { width: 100%; border: 1px dashed #bcc8bf; background: #fafbfa; border-radius: 12px; padding: 14px; display: flex; justify-content: center; align-items: center; gap: 9px; font-weight: 600; font-size: 13px; cursor: pointer; color: #315542; }
@@ -209,6 +234,7 @@ h1, h2, p { margin-top: 0; }
 @keyframes progress-pulse { 0%, 100% { opacity: .4; transform: scale(.75); } 50% { opacity: 1; transform: scale(1.35); } }
 @media (prefers-reduced-motion: reduce) {
   .workspace { transition: none; }
+  .dialog-backdrop, .confirm-dialog { animation: none; }
   .progress-spinner { animation-duration: 2.4s; }
   .progress-milestone.active .milestone-marker > span { animation: none; }
   .streaming-cursor { animation: none; }

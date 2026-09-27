@@ -163,6 +163,22 @@ public class LibraryChatRepository {
         return findDetail(chatId);
     }
 
+    /**
+     * Deletes only the chat. Database foreign-key cascades remove its document
+     * links, messages, cited sources, and conversation summaries. The shared
+     * library documents and their vector embeddings are intentionally retained.
+     */
+    @Transactional
+    public void delete(UUID chatId) {
+        int deleted = this.jdbcTemplate.update("""
+                DELETE FROM %s.library_chats
+                WHERE chat_id = ?
+                """.formatted(schema()), chatId);
+        if (deleted == 0) {
+            throw new IllegalArgumentException("Chat was not found: " + chatId);
+        }
+    }
+
     public LibraryChatContext findContext(UUID chatId) {
         ChatRow chat = findChat(chatId);
         List<String> documentIds = this.jdbcTemplate.query("""

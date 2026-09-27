@@ -58,6 +58,12 @@ export async function renameChat(chatId, title) {
   );
 }
 
+export async function deleteChat(chatId) {
+  return parseResponse(
+    await fetch(`/api/chats/${chatId}`, { method: "DELETE" }),
+  );
+}
+
 export async function attachChatDocuments(chatId, documentIds) {
   return parseResponse(
     await fetch(`/api/chats/${chatId}/documents`, {

@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import {
   attachChatDocuments,
   createChat,
+  deleteChat,
   detachChatDocument,
   getChat,
   getChats,
@@ -42,6 +43,7 @@ function Icon({ name, size = 18 }) {
     library: <><path d="M4 19.5V5a2 2 0 0 1 2-2h3v18H6a2 2 0 0 1-2-1.5z"/><path d="M9 5h5v16H9zM14 7l4-1 2 14-6 1z"/></>,
     panel: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></>,
     edit: <><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></>,
+    trash: <><path d="M4 7h16"/><path d="m9 7 .8-3h4.4l.8 3"/><path d="m6.5 7 1 13h9l1-13"/><path d="M10 11v5M14 11v5"/></>,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -354,6 +356,8 @@ function App() {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [renaming, setRenaming] = useState(false);
+  const [chatPendingDeletion, setChatPendingDeletion] = useState(null);
+  const [deletingChatId, setDeletingChatId] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null);
   const [sending, setSending] = useState(false);
@@ -462,6 +466,16 @@ function App() {
       // Sidebar preference is optional when browser storage is unavailable.
     }
   }, [sidebarCollapsed]);
+  useEffect(() => {
+    if (!chatPendingDeletion) return undefined;
+    function closeDeleteDialog(event) {
+      if (event.key === "Escape" && !deletingChatId) {
+        setChatPendingDeletion(null);
+      }
+    }
+    document.addEventListener("keydown", closeDeleteDialog);
+    return () => document.removeEventListener("keydown", closeDeleteDialog);
+  }, [chatPendingDeletion, deletingChatId]);
 
   async function toggleDocument(documentId) {
     if (!activeChatId || changingContext || sending) return;
@@ -534,7 +548,7 @@ function App() {
   }
 
   async function startNewChat() {
-    if (sending) return;
+    if (sending || deletingChatId) return;
     try {
       const created = await createChat();
       setChats((current) => [{
@@ -554,6 +568,61 @@ function App() {
       setEditingTitle(false);
     } catch (error) {
       setNotice({ type: "error", text: error.message });
+    }
+  }
+
+  function requestChatDeletion(chat) {
+    if (sending || deletingChatId) return;
+    setChatPendingDeletion(chat);
+  }
+
+  async function handleDeleteChat() {
+    const chat = chatPendingDeletion;
+    if (!chat || sending || deletingChatId) return;
+
+    setDeletingChatId(chat.chatId);
+    setNotice(null);
+    try {
+      await deleteChat(chat.chatId);
+      let remainingChats = await getChats();
+
+      if (chat.chatId === activeChatId) {
+        setActiveSource(null);
+        setEditingTitle(false);
+        setMessage("");
+
+        if (remainingChats.length === 0) {
+          const created = await createChat();
+          remainingChats = [{
+            chatId: created.chatId,
+            title: created.title,
+            contextVersion: created.contextVersion,
+            documentCount: created.documents.length,
+            messageCount: created.messages.length,
+            updatedAt: created.updatedAt,
+          }];
+          setActiveChatId(created.chatId);
+          setActiveChat(created);
+          setMessages([]);
+        } else {
+          const detail = await getChat(remainingChats[0].chatId);
+          setActiveChatId(detail.chatId);
+          setActiveChat(detail);
+          setMessages(normalizeMessages(detail));
+        }
+      }
+
+      setChats(remainingChats);
+      setChatPendingDeletion(null);
+      setNotice({
+        type: "success",
+        text: "Chat deleted. Its uploaded documents remain available in your library.",
+      });
+    } catch (error) {
+      setChatPendingDeletion(null);
+      setNotice({ type: "error", text: error.message });
+    } finally {
+      setDeletingChatId(null);
     }
   }
 
@@ -648,7 +717,7 @@ function App() {
             ? `${selectedIds.length} attached document${selectedIds.length === 1 ? "" : "s"} · History saved`
             : "Attach documents to this chat"}</span>
         </div>
-        <button className="new-chat-button" type="button" onClick={startNewChat}>
+        <button className="new-chat-button" type="button" disabled={Boolean(deletingChatId)} onClick={startNewChat}>
           <Icon name="plus" size={17} /> New chat
         </button>
       </header>
@@ -694,19 +763,33 @@ function App() {
           <div className="chat-list" aria-label="Saved chats">
             {loadingWorkspace && <div className="list-state">Loading your chats…</div>}
             {chats.map((chat) => (
-              <button
-                type="button"
+              <div
                 className={`chat-list-item ${chat.chatId === activeChatId ? "selected" : ""}`}
                 key={chat.chatId}
-                disabled={sending}
-                onClick={() => openChat(chat.chatId)}
               >
-                <span className="chat-list-icon"><Icon name="chat" size={15} /></span>
-                <span className="chat-list-copy">
-                  <strong>{chat.title}</strong>
-                  <small>{chat.documentCount} docs · {chat.messageCount} messages</small>
-                </span>
-              </button>
+                <button
+                  type="button"
+                  className="chat-list-open"
+                  disabled={sending || Boolean(deletingChatId)}
+                  onClick={() => openChat(chat.chatId)}
+                >
+                  <span className="chat-list-icon"><Icon name="chat" size={15} /></span>
+                  <span className="chat-list-copy">
+                    <strong>{chat.title}</strong>
+                    <small>{chat.documentCount} docs · {chat.messageCount} messages</small>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="chat-delete-button"
+                  disabled={sending || Boolean(deletingChatId)}
+                  onClick={() => requestChatDeletion(chat)}
+                  aria-label={`Delete ${chat.title}`}
+                  title="Delete chat"
+                >
+                  <Icon name="trash" size={14} />
+                </button>
+              </div>
             ))}
           </div>
 
@@ -868,6 +951,63 @@ function App() {
 
         <SourcePreview source={activeSource} onClose={() => setActiveSource(null)} />
       </div>
+
+      {chatPendingDeletion && (
+        <div
+          className="dialog-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !deletingChatId) {
+              setChatPendingDeletion(null);
+            }
+          }}
+        >
+          <section
+            className="confirm-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-chat-title"
+            aria-describedby="delete-chat-description"
+            aria-busy={Boolean(deletingChatId)}
+          >
+            <div className="confirm-dialog-heading">
+              <span className="confirm-dialog-icon"><Icon name="trash" size={19} /></span>
+              <div>
+                <span className="eyebrow">Confirm deletion</span>
+                <h2 id="delete-chat-title">Delete this chat?</h2>
+              </div>
+            </div>
+            <div className="confirm-dialog-body" id="delete-chat-description">
+              <p>
+                <strong>“{chatPendingDeletion.title}”</strong> and its conversation history will be permanently deleted.
+              </p>
+              <div className="confirm-dialog-note">
+                <Icon name="file" size={16} />
+                <span>Uploaded documents and embeddings will remain safely available in your library.</span>
+              </div>
+            </div>
+            <div className="confirm-dialog-actions">
+              <button
+                type="button"
+                className="dialog-cancel-button"
+                disabled={Boolean(deletingChatId)}
+                onClick={() => setChatPendingDeletion(null)}
+                autoFocus
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="dialog-delete-button"
+                disabled={Boolean(deletingChatId)}
+                onClick={handleDeleteChat}
+              >
+                <Icon name="trash" size={15} />
+                {deletingChatId ? "Deleting…" : "Delete chat"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

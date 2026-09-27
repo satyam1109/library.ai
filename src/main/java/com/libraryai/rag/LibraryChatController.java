@@ -69,6 +69,12 @@ public class LibraryChatController {
         return this.chatRepository.rename(chatId, request.title());
     }
 
+    @DeleteMapping("/{chatId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@PathVariable UUID chatId) {
+        this.chatRepository.delete(chatId);
+    }
+
     @PostMapping("/{chatId}/documents")
     public LibraryChatDetail attachDocuments(
             @PathVariable UUID chatId,
